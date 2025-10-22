@@ -14,7 +14,7 @@ import logging
 import multiprocessing
 
 # Application version
-VERSION = "2.1.8"
+VERSION = "2.1.9"
 
 # Classification labels
 LABELS = ["(Unclassified)", "no label", "read failure", "incomplete", "unreadable"]

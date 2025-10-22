@@ -23,6 +23,12 @@ matplotlib_hiddenimports = collect_submodules('matplotlib')
 seaborn_hiddenimports = collect_submodules('seaborn')
 cv2_hiddenimports = collect_submodules('cv2')
 
+# Collect jaraco submodules (needed by pkg_resources)
+try:
+    jaraco_hiddenimports = collect_submodules('jaraco')
+except:
+    jaraco_hiddenimports = []
+
 block_cipher = None
 
 a = Analysis(
@@ -73,6 +79,7 @@ a = Analysis(
         *matplotlib_hiddenimports,
         *seaborn_hiddenimports,
         *cv2_hiddenimports,
+        *jaraco_hiddenimports,
         
         # System and file operations
         'os',
@@ -88,6 +95,13 @@ a = Analysis(
         # Additional imports that might be dynamically loaded
         'pkg_resources',
         'pkg_resources.py2_warn',
+        
+        # jaraco dependencies (needed by pkg_resources/setuptools)
+        'jaraco.text',
+        'jaraco.functools', 
+        'jaraco.context',
+        'jaraco.collections',
+        'jaraco',
     ],
     hookspath=[],
     hooksconfig={},
