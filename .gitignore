@@ -28,6 +28,10 @@ MANIFEST
 # Note: Keep .spec files for building executables
 # *.spec
 
+# Allow dist directory but exclude other executables
+# dist/
+# *.exe (commented out to allow AuroraFISAnalytics.exe)
+
 # Virtual environments
 env/
 venv/
@@ -58,8 +62,8 @@ revision_*.csv
 test_images/
 *.log
 
-# Executable files (use GitHub Releases instead)
-*.exe
+# Large archive files (use GitHub Releases instead)
+# *.exe (commented out to allow dist/AuroraFISAnalytics.exe)
 *.zip
 
 # Temporary files
