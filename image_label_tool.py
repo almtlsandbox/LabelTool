@@ -14,7 +14,7 @@ import logging
 import multiprocessing
 
 # Application version
-VERSION = "2.1.6"
+VERSION = "2.1.7"
 
 # Classification labels
 LABELS = ["(Unclassified)", "no label", "read failure", "incomplete", "unreadable"]
@@ -2296,7 +2296,9 @@ class ImageLabelTool:
         # Calculate read vs noread sessions
         total_noread = results.get('total_noread', 0)
         unique_ids = results['unique_ids']
-        read_sessions = unique_ids - total_noread
+        effective_session_count = results.get('effective_session_count', 0)
+        # Use effective session count (excludes false triggers and timeouts) for consistency with Analysis tab
+        read_sessions = effective_session_count - total_noread
         
         output.append(f"Number of Read sessions: {read_sessions}")
         output.append(f"Number of No-Read sessions: {total_noread}")
@@ -2615,9 +2617,11 @@ class ImageLabelTool:
         unique_ids = log_results['unique_ids']
         total_noread = log_results.get('total_noread', 0)
         
-        if unique_ids > 0:
-            read_parcels = unique_ids - total_noread
-            return (read_parcels / unique_ids) * 100
+        # Use effective session count for consistency
+        effective_session_count = log_results.get('effective_session_count', unique_ids)
+        if effective_session_count > 0:
+            read_parcels = effective_session_count - total_noread
+            return (read_parcels / effective_session_count) * 100
         return 0.0
     
     def calculate_net_reading_performance(self, log_results, analysis_data):
@@ -2699,7 +2703,9 @@ class ImageLabelTool:
             # Calculate read vs noread sessions
             total_noread = results.get('total_noread', 0)
             unique_ids = results['unique_ids']
-            read_sessions = unique_ids - total_noread
+            effective_session_count = results.get('effective_session_count', 0)
+            # Use effective session count (excludes false triggers and timeouts) for consistency with Analysis tab
+            read_sessions = effective_session_count - total_noread
             
             report_lines.append(f"Number of Read sessions: {read_sessions}")
             report_lines.append(f"Number of No-Read sessions: {total_noread}")
