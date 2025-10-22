@@ -14,7 +14,7 @@ import logging
 import multiprocessing
 
 # Application version
-VERSION = "2.1.7"
+VERSION = "2.1.8"
 
 # Classification labels
 LABELS = ["(Unclassified)", "no label", "read failure", "incomplete", "unreadable"]
@@ -992,16 +992,11 @@ class ImageLabelTool:
             self.scale_info_var.set("")
             return
             
-        # Blink effect: Clear display briefly before showing new image
-        self.canvas.delete("all")
-        self.canvas.configure(bg="#F0F0F0")  # Brief light gray flash
-        self.root.update_idletasks()  # Force UI update without blocking
-        
-        # Schedule the actual image display after blink delay
-        self.root.after(25, self._display_image_after_blink)
+        # Display image directly without aggressive blinking
+        self._display_image_direct()
     
-    def _display_image_after_blink(self):
-        """Display the actual image after blink effect"""
+    def _display_image_direct(self):
+        """Display the image directly without blinking effect"""
         if not self.image_paths:
             return
             
@@ -1013,8 +1008,8 @@ class ImageLabelTool:
         if hasattr(self, 'histogram_eq_enabled') and self.histogram_eq_enabled.get():
             img = self.apply_histogram_equalization(img)
         
-        # Restore canvas background and clear any previous content
-        self.canvas.configure(bg="black")  # Restore normal background
+        # Clear any previous content and set normal background
+        self.canvas.configure(bg="black")
         self.canvas.delete("all")
         
         # Get canvas dimensions (reduced for ultra-compact layout)
@@ -1245,12 +1240,26 @@ class ImageLabelTool:
         # Update navigation buttons
         self.update_navigation_buttons()
 
+    def blink_status_text(self):
+        """Create a subtle blink effect on the status text (normal -> bold -> normal)"""
+        # Store original font
+        original_font = self.status.cget("font")
+        
+        # Change to bold
+        self.status.config(font=("Arial", 12, "bold"))
+        self.root.update_idletasks()
+        
+        # Schedule return to normal after 150ms
+        self.root.after(150, lambda: self.status.config(font=original_font))
+
     def prev_image(self):
         if self.current_index > 0:
             self.current_index -= 1
             # Reset to fit mode when navigating to new image
             self.reset_to_fit_mode()
             self.show_image()
+            # Add subtle text blink for navigation feedback
+            self.blink_status_text()
 
     def go_to_first_image(self):
         """Jump to the first image in the list."""
@@ -1259,6 +1268,8 @@ class ImageLabelTool:
             # Reset to fit mode when navigating to new image
             self.reset_to_fit_mode()
             self.show_image()
+            # Add subtle text blink for navigation feedback
+            self.blink_status_text()
 
     def next_image(self):
         if self.current_index < len(self.image_paths) - 1:
@@ -1266,6 +1277,8 @@ class ImageLabelTool:
             # Reset to fit mode when navigating to new image
             self.reset_to_fit_mode()
             self.show_image()
+            # Add subtle text blink for navigation feedback
+            self.blink_status_text()
 
     def jump_to_next_unclassified(self):
         """Jump to the next unclassified image after the current index."""
@@ -1284,6 +1297,8 @@ class ImageLabelTool:
             if path not in self.labels or self.labels[path] == "(Unclassified)":
                 self.current_index = check_index
                 self.show_image()
+                # Add subtle text blink for navigation feedback
+                self.blink_status_text()
                 return
         
         # If no unclassified images found, show a message
@@ -4424,7 +4439,7 @@ class ImageLabelTool:
             # Start zoom from current fitted scale and increment it
             current_scale = getattr(self, 'current_scale_factor', 1.0)
             self.zoom_level = min(current_scale * 1.25, 5.0)  # Increment from current scale
-        self.show_image()
+        self.show_image()  # No text blink for zoom operations
 
     def zoom_out(self):
         """Decrease zoom level"""
@@ -4438,7 +4453,7 @@ class ImageLabelTool:
             # Start zoom from current fitted scale and decrement it
             current_scale = getattr(self, 'current_scale_factor', 1.0)
             self.zoom_level = max(current_scale / 1.25, 0.1)  # Decrement from current scale
-        self.show_image()
+        self.show_image()  # No text blink for zoom operations
 
     def mouse_wheel_zoom(self, event):
         """Handle mouse wheel zoom"""
