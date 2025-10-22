@@ -28,9 +28,8 @@ MANIFEST
 # Note: Keep .spec files for building executables
 # *.spec
 
-# Allow dist directory but exclude other executables
-# dist/
-# *.exe (commented out to allow AuroraFISAnalytics.exe)
+# PyInstaller output
+dist/
 
 # Virtual environments
 env/
@@ -62,8 +61,8 @@ revision_*.csv
 test_images/
 *.log
 
-# Large archive files (use GitHub Releases instead)
-# *.exe (commented out to allow dist/AuroraFISAnalytics.exe)
+# Large files (use GitHub Releases instead)
+*.exe
 *.zip
 
 # Temporary files
