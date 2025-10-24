@@ -246,6 +246,18 @@ class ImageLabelTool:
         filter_frame = tk.Frame(top_frame, bg="#FAFAFA")
         filter_frame.pack(side=tk.LEFT, padx=(20, 0))
         tk.Label(filter_frame, text="Filter:", bg="#FAFAFA", font=("Arial", 10)).pack(side=tk.LEFT)
+
+        # Session filter entry (disabled by default until Session # filter is selected)
+        self.session_filter_label = tk.Label(filter_frame, text="#", bg="#FAFAFA", font=("Arial", 10))
+        self.session_filter_label.pack(side=tk.LEFT, padx=(8, 2))
+        self.session_filter_var = tk.StringVar()
+        self.session_filter_entry = tk.Entry(filter_frame, textvariable=self.session_filter_var, width=10,
+                                            font=("Arial", 10), bg="white", relief="solid", bd=1)
+        self.session_filter_entry.pack(side=tk.LEFT, padx=(0, 5))
+        self.session_filter_entry.configure(state=tk.DISABLED, disabledbackground="#E0E0E0", disabledforeground="#666666")
+        self.session_filter_entry.bind('<KeyRelease>', self.on_session_filter_changed)
+        self.session_filter_entry.bind('<Return>', lambda event: self.on_session_filter_changed())
+
         self.filter_var = tk.StringVar(value="(Unclassified) only")
         filter_options = [
             "All images",
@@ -255,7 +267,8 @@ class ImageLabelTool:
             "incomplete only",
             "unreadable only",
             "OCR recovered only",
-            "False NoRead only"
+            "False NoRead only",
+            "Session #"
         ]
         self.filter_menu = tk.OptionMenu(filter_frame, self.filter_var, *filter_options, command=self.on_filter_changed)
         self.filter_menu.config(bg="#F5F5F5", font=("Arial", 10), relief="solid", bd=1)
@@ -1666,11 +1679,23 @@ class ImageLabelTool:
 
     def on_filter_changed(self, value=None):
         """Called when the filter dropdown changes"""
+        if hasattr(self, 'session_filter_entry'):
+            if self.filter_var.get() == "Session #":
+                self.session_filter_entry.config(state=tk.NORMAL, bg="white")
+                # Keep focus on the entry for quick typing when the session filter is active
+                self.session_filter_entry.focus_set()
+            else:
+                self.session_filter_entry.config(state=tk.DISABLED)
         self.apply_filter()
         self.update_filter_button_state()
         self.update_jump_button_state()
         # Update comment field state when filter changes
         self.update_comment_field_state()
+
+    def on_session_filter_changed(self, event=None):
+        """Re-apply filtering when the session filter input changes."""
+        if self.filter_var.get() == "Session #":
+            self.apply_filter()
 
     def on_comment_change(self, *args):
         """Called when the comment text field changes"""
@@ -2838,6 +2863,29 @@ class ImageLabelTool:
             # Special filter for False NoRead images
             self.image_paths = [path for path in self.all_image_paths
                                if self.false_noread.get(path, False)]
+        elif filter_value == "Session #":
+            session_input = self.session_filter_var.get().strip() if hasattr(self, 'session_filter_var') else ""
+            if not session_input:
+                # No value entered; treat as no results rather than falling back to all images
+                self.image_paths = []
+            else:
+                # Validate that the input only contains digits or underscores
+                if any(ch not in "0123456789_" for ch in session_input):
+                    self.image_paths = []
+                else:
+                    matching_paths = []
+                    for path in self.all_image_paths:
+                        session_id = self.get_session_number(path)
+                        if not session_id:
+                            continue
+                        if '_' in session_input:
+                            if session_id == session_input:
+                                matching_paths.append(path)
+                        else:
+                            base_id = session_id.split('_')[0] if '_' in session_id else session_id
+                            if base_id == session_input:
+                                matching_paths.append(path)
+                    self.image_paths = matching_paths
         else:
             # Map filter names to label values
             filter_map = {
