@@ -14,7 +14,7 @@ import logging
 import multiprocessing
 
 # Application version
-VERSION = "2.1.9"
+VERSION = "2.2.0"
 
 # Classification labels
 LABELS = ["(Unclassified)", "no label", "read failure", "incomplete", "unreadable"]
@@ -383,6 +383,10 @@ class ImageLabelTool:
         self.canvas.bind("<Button-1>", self.start_pan)
         self.canvas.bind("<B1-Motion>", self.do_pan)
         self.canvas.bind("<MouseWheel>", self.mouse_wheel_zoom)
+        
+        # Bind double-click events for zoom
+        self.canvas.bind("<Double-Button-1>", self.double_click_zoom_in)
+        self.canvas.bind("<Control-Double-Button-1>", self.double_click_zoom_out)
         
         # Add file status above label buttons - reduced spacing
         self.status_var = tk.StringVar()
@@ -4462,6 +4466,94 @@ class ImageLabelTool:
             self.zoom_in()
         else:
             self.zoom_out()
+
+    def double_click_zoom_in(self, event):
+        """Handle double-click zoom in (x2) centered at click location"""
+        self._perform_centered_zoom(event, 2.0)
+        return "break"
+        
+    def _perform_centered_zoom(self, event, zoom_factor):
+        """Perform zoom operation centered at the specified coordinates"""
+        if not self.image_paths:
+            return
+            
+        # Get click coordinates relative to canvas viewport
+        canvas_x = event.x
+        canvas_y = event.y
+        
+        # Convert to scroll region coordinates if in 1:1 mode
+        if self.scale_1to1:
+            # Get current scroll position
+            scroll_x_fraction = self.canvas.canvasx(0) / max(1, self.canvas.winfo_reqwidth())
+            scroll_y_fraction = self.canvas.canvasy(0) / max(1, self.canvas.winfo_reqheight())
+            
+            # Calculate image coordinates at click point
+            image_x = self.canvas.canvasx(canvas_x)
+            image_y = self.canvas.canvasy(canvas_y)
+        else:
+            # In fitted mode, calculate image coordinates
+            image_x = canvas_x
+            image_y = canvas_y
+        
+        # Store old zoom level for centering calculation
+        old_zoom = self.zoom_level if self.scale_1to1 else self.current_scale_factor
+        
+        # Apply zoom
+        if self.scale_1to1:
+            # Already in 1:1 mode, apply zoom factor
+            if zoom_factor > 1:
+                new_zoom = min(self.zoom_level * zoom_factor, 5.0)
+            else:
+                new_zoom = max(self.zoom_level * zoom_factor, 0.1)
+            self.zoom_level = new_zoom
+        else:
+            # Switch to 1:1 mode and apply zoom from current scale
+            self.scale_1to1 = True
+            self.btn_1to1.config(text="Fit to Window", bg="#A5D6A7")
+            current_scale = getattr(self, 'current_scale_factor', 1.0)
+            if zoom_factor > 1:
+                new_zoom = min(current_scale * zoom_factor, 5.0)
+            else:
+                new_zoom = max(current_scale * zoom_factor, 0.1)
+            self.zoom_level = new_zoom
+        
+        # Redisplay image with new zoom
+        self.show_image()  # No text blink for zoom operations
+        
+        # Center the zoom at the click point
+        if old_zoom > 0 and self.scale_1to1:
+            # Calculate the new position of the clicked point after zoom
+            zoom_ratio = new_zoom / old_zoom
+            new_image_x = image_x * zoom_ratio
+            new_image_y = image_y * zoom_ratio
+            
+            # Get canvas dimensions
+            canvas_width = self.canvas.winfo_width()
+            canvas_height = self.canvas.winfo_height()
+            
+            # Calculate desired top-left corner to center the clicked point
+            target_x = new_image_x - canvas_x
+            target_y = new_image_y - canvas_y
+            
+            # Get scroll region size
+            scroll_region = self.canvas.cget("scrollregion").split()
+            if len(scroll_region) == 4:
+                region_width = float(scroll_region[2])
+                region_height = float(scroll_region[3])
+                
+                if region_width > canvas_width or region_height > canvas_height:
+                    # Calculate scroll fractions (0.0 to 1.0)
+                    scroll_x_frac = max(0.0, min(1.0, target_x / max(1, region_width - canvas_width)))
+                    scroll_y_frac = max(0.0, min(1.0, target_y / max(1, region_height - canvas_height)))
+                    
+                    # Apply the scroll position
+                    self.canvas.xview_moveto(scroll_x_frac)
+                    self.canvas.yview_moveto(scroll_y_frac)
+
+    def double_click_zoom_out(self, event):
+        """Handle Ctrl+double-click zoom out (x0.5) centered at click location"""
+        self._perform_centered_zoom(event, 0.5)
+        return "break"
 
     def start_pan(self, event):
         """Start panning with mouse"""
