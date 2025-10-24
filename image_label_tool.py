@@ -2873,18 +2873,39 @@ class ImageLabelTool:
                 if any(ch not in "0123456789_" for ch in session_input):
                     self.image_paths = []
                 else:
+                    def normalize_numeric(text):
+                        """Return numeric strings without leading zeros for consistent comparison."""
+                        if text.isdigit():
+                            # Preserve "0" specifically, but drop other leading zeros
+                            return str(int(text))
+                        return text
+
+                    def split_session_parts(value):
+                        """Split a session identifier into (base, suffix) parts with normalized base."""
+                        if '_' in value:
+                            base, suffix = value.split('_', 1)
+                        else:
+                            base, suffix = value, ""
+                        return normalize_numeric(base), suffix
+
+                    input_base, input_suffix = split_session_parts(session_input)
+
                     matching_paths = []
                     for path in self.all_image_paths:
                         session_id = self.get_session_number(path)
                         if not session_id:
                             continue
+
+                        session_base, session_suffix = split_session_parts(session_id)
+
+                        base_matches = session_base == input_base
                         if '_' in session_input:
-                            if session_id == session_input:
+                            if base_matches and session_suffix == input_suffix:
                                 matching_paths.append(path)
                         else:
-                            base_id = session_id.split('_')[0] if '_' in session_id else session_id
-                            if base_id == session_input:
+                            if base_matches:
                                 matching_paths.append(path)
+
                     self.image_paths = matching_paths
         else:
             # Map filter names to label values
