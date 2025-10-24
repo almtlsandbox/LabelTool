@@ -14,7 +14,7 @@ import logging
 import multiprocessing
 
 # Application version
-VERSION = "2.2.2"
+VERSION = "2.2.3"
 
 # Classification labels
 LABELS = ["(Unclassified)", "no label", "read failure", "incomplete", "unreadable"]
@@ -79,13 +79,19 @@ class ImageLabelTool:
             return
 
         # Step 3: Collect all images in those sessions with label unreadable, read failure, or incomplete
-        export_labels = {"unreadable", "read failure", "incomplete"}
+        # Note: For "read failure" images, exclude those with False NoRead status checked
         images_to_export = []
         for path in self.all_image_paths:
             session_id = get_session_id(path)
             label = self.labels.get(path, "(Unclassified)")
-            if session_id in valid_sessions and label in export_labels:
-                images_to_export.append(path)
+            
+            if session_id in valid_sessions:
+                # Include "unreadable" and "incomplete" images unconditionally
+                if label in {"unreadable", "incomplete"}:
+                    images_to_export.append(path)
+                # Include "read failure" images only if they don't have False NoRead status
+                elif label == "read failure" and not self.false_noread.get(path, False):
+                    images_to_export.append(path)
 
         if not images_to_export:
             messagebox.showinfo("No Images to Export", "No images with the required labels found in valid sessions.")
@@ -111,7 +117,7 @@ class ImageLabelTool:
 
         messagebox.showinfo(
             "Export Complete",
-            f"Copied {copied} image(s) (unreadable/read failure/incomplete) from unreadable sessions to:\n{export_folder}"
+            f"Copied {copied} image(s) (unreadable/read failure*/incomplete) from valid sessions to:\n{export_folder}\n\n*read failure images with False NoRead status were excluded"
         )
     def __init__(self, root):
         self.root = root
@@ -1007,12 +1013,15 @@ class ImageLabelTool:
         path = self.image_paths[self.current_index]
         img = Image.open(path)
         original_width, original_height = img.size
+            # Debug: uncomment for troubleshooting
+            # print(f"📂 LOAD DEBUG: Loaded image {os.path.basename(path)} size ({original_width}x{original_height})")
         
         # Apply histogram equalization if enabled
         if hasattr(self, 'histogram_eq_enabled') and self.histogram_eq_enabled.get():
             img = self.apply_histogram_equalization(img)
-        
-        # Clear any previous content and set normal background
+            # Debug: uncomment for troubleshooting
+            # new_width, new_height = img.size
+            # print(f"📂 LOAD DEBUG: After histogram equalization size ({new_width}x{new_height})")        # Clear any previous content and set normal background
         self.canvas.configure(bg="black")
         self.canvas.delete("all")
         
@@ -1030,14 +1039,39 @@ class ImageLabelTool:
             
             if scale_factor != 1.0:
                 display_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                # Debug: uncomment for troubleshooting
+                # print(f"🔧 RESIZE DEBUG: {original_width}x{original_height} * {scale_factor:.3f} = {new_width}x{new_height} -> actual {display_img.size}")
             else:
                 display_img = img
+                # Debug: uncomment for troubleshooting  
+                # print(f"🔧 RESIZE DEBUG: No resize needed, keeping {display_img.size}")
             
             self.current_scale_factor = scale_factor
             scale_text = f"Scale: {scale_factor:.2f}\n({scale_factor*100:.1f}%)"
             
-            # Set scroll region to image size
-            self.canvas.configure(scrollregion=(0, 0, new_width, new_height))
+            # Add padding around the image so any point can be centered
+            # Padding should be at least half the canvas size to allow full centering
+            padding_x = max(canvas_width // 2, 200)
+            padding_y = max(canvas_height // 2, 200)
+            
+            # Set scroll region with padding
+            scroll_width = new_width + 2 * padding_x
+            scroll_height = new_height + 2 * padding_y
+            self.canvas.configure(scrollregion=(0, 0, scroll_width, scroll_height))
+            
+            # Store expected dimensions for centering verification
+            self._expected_scroll_width = scroll_width
+            self._expected_scroll_height = scroll_height
+            
+            # Store padding for coordinate calculations
+            self.image_padding_x = padding_x
+            self.image_padding_y = padding_y
+            
+            # Debug: uncomment for troubleshooting
+            # print(f"📐 DISPLAY DEBUG: Image size ({new_width}x{new_height})")
+            # print(f"📐 DISPLAY DEBUG: Canvas size ({canvas_width}x{canvas_height})")
+            # print(f"📐 DISPLAY DEBUG: Padding ({padding_x}x{padding_y})")
+            # print(f"📐 DISPLAY DEBUG: Scroll region ({scroll_width}x{scroll_height})")
             
             if new_width > canvas_width or new_height > canvas_height:
                 scale_text += "\nUse mouse to pan"
@@ -1074,8 +1108,10 @@ class ImageLabelTool:
         # Center the image in the canvas
         img_width, img_height = display_img.size
         if self.scale_1to1:
-            # For 1:1 mode, place image at origin for proper scrolling
-            self.canvas.create_image(0, 0, anchor="nw", image=self.tk_img)
+            # For 1:1 mode, place image with padding offset for proper centering
+            # Debug: uncomment for troubleshooting
+            # print(f"🖼️  IMAGE DEBUG: Placing image at ({self.image_padding_x}, {self.image_padding_y})")
+            self.canvas.create_image(self.image_padding_x, self.image_padding_y, anchor="nw", image=self.tk_img)
         else:
             # For fitted mode, center the image
             center_x = canvas_width // 2
@@ -1129,116 +1165,6 @@ class ImageLabelTool:
         
         # Update navigation buttons
         self.update_navigation_buttons()
-        
-        # Get canvas dimensions (reduced for ultra-compact layout)
-        canvas_width = max(350, self.canvas.winfo_width())  # Reduced from 400
-        canvas_height = max(250, self.canvas.winfo_height())  # Reduced from 300
-        if canvas_width <= 1 or canvas_height <= 1:
-            canvas_width, canvas_height = 350, 350  # Smaller default size
-        
-        if self.scale_1to1:
-            # Show image at 1:1 scale with current zoom level
-            scale_factor = self.zoom_level
-            new_width = int(original_width * scale_factor)
-            new_height = int(original_height * scale_factor)
-            
-            if scale_factor != 1.0:
-                display_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            else:
-                display_img = img
-            
-            self.current_scale_factor = scale_factor
-            scale_text = f"Scale: {scale_factor:.2f}\n({scale_factor*100:.1f}%)"
-            
-            # Set scroll region to image size
-            self.canvas.configure(scrollregion=(0, 0, new_width, new_height))
-            
-            if new_width > canvas_width or new_height > canvas_height:
-                scale_text += "\nUse mouse to pan"
-                # Show scrollbars
-                self.h_scrollbar.grid(row=1, column=0, sticky="ew")
-                self.v_scrollbar.grid(row=0, column=1, sticky="ns")
-            else:
-                # Hide scrollbars if not needed
-                self.h_scrollbar.grid_remove()
-                self.v_scrollbar.grid_remove()
-        else:
-            # Calculate scale factor needed to fit image (fitted mode)
-            scale_x = canvas_width / original_width
-            scale_y = canvas_height / original_height
-            scale_factor = min(scale_x, scale_y)
-            self.current_scale_factor = scale_factor
-            self.zoom_level = scale_factor  # Sync zoom level with fitted scale
-            
-            # Resize image to fit available space while maintaining aspect ratio
-            display_img = img.copy()
-            display_img.thumbnail((canvas_width, canvas_height), Image.Resampling.LANCZOS)
-            
-            scale_text = f"Scale: {scale_factor:.2f}\n({scale_factor*100:.1f}%)\nFitted to window"
-            
-            # Reset scroll region for fitted mode and center the image
-            img_width, img_height = display_img.size
-            self.canvas.configure(scrollregion=(0, 0, canvas_width, canvas_height))
-            # Hide scrollbars in fitted mode
-            self.h_scrollbar.grid_remove()
-            self.v_scrollbar.grid_remove()
-        
-        self.tk_img = ImageTk.PhotoImage(display_img)
-        
-        # Center the image in the canvas
-        img_width, img_height = display_img.size
-        if self.scale_1to1:
-            # For 1:1 mode, place image at origin for proper scrolling
-            self.canvas.create_image(0, 0, anchor="nw", image=self.tk_img)
-        else:
-            # For fitted mode, center the image
-            center_x = canvas_width // 2
-            center_y = canvas_height // 2
-            self.canvas.create_image(center_x, center_y, anchor="center", image=self.tk_img)
-        
-        self.scale_info_var.set(scale_text)
-        
-        label = self.labels.get(path, LABELS[0])
-        self.label_var.set(label)
-        
-        # Update OCR readable checkbox status
-        ocr_status = self.ocr_readable.get(path, False)
-        self.ocr_readable_var.set(ocr_status)
-        
-        # Update False NoRead checkbox status
-        false_noread_status = self.false_noread.get(path, False)
-        self.false_noread_var.set(false_noread_status)
-        
-        # Update False NoRead checkbox enabled/disabled state
-        self.update_false_noread_checkbox_state()
-        
-        # Update comment field with current image's comment
-        if hasattr(self, 'comment_text'):
-            comment_text = self.comments.get(path, "")
-            # Temporarily disable event bindings to prevent triggering on_comment_change during programmatic updates
-            self.comment_text.unbind('<KeyRelease>')
-            self.comment_text.unbind('<FocusOut>')
-            
-            # Clear and set the Text widget content
-            self.comment_text.delete("1.0", tk.END)
-            self.comment_text.insert("1.0", comment_text)
-            
-            # Re-bind the events after programmatic update is complete
-            self.comment_text.bind('<KeyRelease>', self.on_comment_change)
-            self.comment_text.bind('<FocusOut>', self.on_comment_change)
-            
-            # Update comment field state based on classification and filter status
-            self.update_comment_field_state()
-        
-        # Update current image filename in comment section
-        if hasattr(self, 'current_image_filename_var'):
-            filename = os.path.basename(path)
-            self.current_image_filename_var.set(f"📄 {filename}")
-        
-        self.status_var.set(f"{os.path.basename(path)} ({self.current_index+1}/{len(self.image_paths)}) - {original_width}x{original_height}px")
-        
-        # Update progress and label status
-        self.update_progress_display()
         self.update_current_label_status()
         
         # Update navigation buttons
@@ -4469,6 +4395,7 @@ class ImageLabelTool:
 
     def double_click_zoom_in(self, event):
         """Handle double-click zoom in (x2) centered at click location"""
+        print(f"🖱️  DOUBLE CLICK ZOOM IN at ({event.x}, {event.y})")
         self._perform_centered_zoom(event, 2.0)
         return "break"
         
@@ -4481,16 +4408,59 @@ class ImageLabelTool:
         click_canvas_x = event.x
         click_canvas_y = event.y
         
-        # Convert to absolute image coordinates (accounting for current scroll position)
+        # Debug: uncomment for troubleshooting
+        # print(f"🔍 ZOOM: Click ({click_canvas_x}, {click_canvas_y}), factor {zoom_factor}")
+        # print(f"🔍 ZOOM: Current mode {'1:1' if self.scale_1to1 else 'fitted'}, zoom {getattr(self, 'zoom_level', 'undefined')}")
+        
+        # Convert to absolute image coordinates (accounting for current scroll position and padding)
         if self.scale_1to1:
-            # In 1:1 mode: click position + scroll offset, then convert to original image coords
-            abs_x = self.canvas.canvasx(click_canvas_x) / self.zoom_level
-            abs_y = self.canvas.canvasy(click_canvas_y) / self.zoom_level
+            # Step 1: Convert click to scroll region coordinates (includes current scroll offset)
+            canvas_x = self.canvas.canvasx(click_canvas_x)
+            canvas_y = self.canvas.canvasy(click_canvas_y)
+            
+            # Step 2: Get padding (where the image starts in the scroll region)
+            padding_x = getattr(self, 'image_padding_x', 0)
+            padding_y = getattr(self, 'image_padding_y', 0)
+            
+            # Step 3: Convert from scroll region to image coordinates (subtract padding offset)
+            image_canvas_x = canvas_x - padding_x
+            image_canvas_y = canvas_y - padding_y
+            
+            # Step 4: Convert from scaled image coordinates to original image coordinates
+            abs_x = image_canvas_x / self.zoom_level
+            abs_y = image_canvas_y / self.zoom_level
+            
+            # Debug: uncomment for troubleshooting
+            # current_xview = self.canvas.xview()
+            # current_yview = self.canvas.yview()
+            # print(f"🔍 ZOOM DEBUG: Click at canvas ({click_canvas_x}, {click_canvas_y})")
+            # print(f"🔍 ZOOM DEBUG: Current scroll view x{current_xview}, y{current_yview}")
+            # print(f"🔍 ZOOM DEBUG: Canvas coords ({canvas_x:.1f}, {canvas_y:.1f})")
+            # print(f"🔍 ZOOM DEBUG: Padding ({padding_x}, {padding_y})")
+            # print(f"🔍 ZOOM DEBUG: Image canvas coords ({image_canvas_x:.1f}, {image_canvas_y:.1f})")
+            # print(f"🔍 ZOOM DEBUG: Original image coords ({abs_x:.1f}, {abs_y:.1f})")
+            # print(f"🔍 ZOOM DEBUG: Current zoom {self.zoom_level:.3f} -> new zoom {zoom_factor:.3f}")
+            
+            # Validate the coordinate conversion
+            if abs_x < 0 or abs_y < 0:
+                # Clamp coordinates to valid image area if click is in padding
+                path = self.image_paths[self.current_index]
+                img = Image.open(path)
+                orig_width, orig_height = img.size
+                abs_x = max(0, min(abs_x, orig_width))
+                abs_y = max(0, min(abs_y, orig_height))
         else:
             # In fitted mode: need to account for centering offset and current scale
             path = self.image_paths[self.current_index]
             img = Image.open(path)
+            
+            # Apply the same processing that will be used for display
+            if hasattr(self, 'histogram_eq_enabled') and self.histogram_eq_enabled.get():
+                img = self.apply_histogram_equalization(img)
+                
             original_width, original_height = img.size
+            # Debug: uncomment for troubleshooting
+            # print(f"🔍 FITTED DEBUG: Using processed image size ({original_width}x{original_height})")
             
             canvas_width = self.canvas.winfo_width()
             canvas_height = self.canvas.winfo_height()
@@ -4507,15 +4477,33 @@ class ImageLabelTool:
             offset_x = (canvas_width - display_width) // 2
             offset_y = (canvas_height - display_height) // 2
             
+            # Debug: uncomment for troubleshooting
+            # print(f"🔍 FITTED DEBUG: Canvas ({canvas_width}x{canvas_height})")
+            # print(f"🔍 FITTED DEBUG: Original image ({original_width}x{original_height})")
+            # print(f"🔍 FITTED DEBUG: Fitted scale {fitted_scale:.3f}")
+            # print(f"🔍 FITTED DEBUG: Display size ({display_width}x{display_height})")
+            # print(f"🔍 FITTED DEBUG: Offset ({offset_x}, {offset_y})")
+            # print(f"🔍 FITTED DEBUG: Click area: x[{offset_x}-{offset_x + display_width}], y[{offset_y}-{offset_y + display_height}]")
+            
             # Convert click to original image coordinates
             if (click_canvas_x >= offset_x and click_canvas_x <= offset_x + display_width and 
                 click_canvas_y >= offset_y and click_canvas_y <= offset_y + display_height):
                 abs_x = (click_canvas_x - offset_x) / fitted_scale
                 abs_y = (click_canvas_y - offset_y) / fitted_scale
+                # Debug: uncomment for troubleshooting
+            # print(f"🔍 FITTED DEBUG: Click inside image -> ({abs_x:.1f}, {abs_y:.1f})")
             else:
                 # Click outside image, use center
                 abs_x = original_width / 2
                 abs_y = original_height / 2
+                # Debug: uncomment for troubleshooting
+                # print(f"🔍 FITTED DEBUG: Click outside image -> using center ({abs_x:.1f}, {abs_y:.1f})")
+            
+            # Validate coordinates are within image bounds
+            abs_x = max(0, min(abs_x, original_width))
+            abs_y = max(0, min(abs_y, original_height))
+            # Debug: uncomment for troubleshooting
+            # print(f"🔍 FITTED DEBUG: Final validated coords ({abs_x:.1f}, {abs_y:.1f})")
         
         # Apply zoom
         if self.scale_1to1:
@@ -4540,20 +4528,47 @@ class ImageLabelTool:
         self.show_image()  # No text blink for zoom operations
         
         # Center the clicked point in viewport after the image is redrawn
-        self.root.after(10, lambda: self._center_image_point(abs_x, abs_y, click_canvas_x, click_canvas_y))
+        # Use multiple delays to ensure proper timing
+        print(f"🔍 ZOOM: Will center at original image coords ({abs_x:.1f}, {abs_y:.1f}) after redraw")
+        
+        def delayed_center():
+            # Ensure canvas is updated first
+            self.canvas.update_idletasks()
+            self._center_image_point(abs_x, abs_y)
+        
+        # Allow more time for the image to be fully displayed before centering
+        self.root.after(50, delayed_center)
     
-    def _center_image_point(self, image_x, image_y, target_canvas_x, target_canvas_y):
+    def _center_image_point(self, image_x, image_y):
         """Center a point from the original image coordinates in the middle of the canvas"""
         if not self.scale_1to1:
             return
+        
+        # Validate input coordinates
+        if not self.image_paths:
+            return
+            
+        # Get the actual current image dimensions to validate coordinates
+        path = self.image_paths[self.current_index]
+        img = Image.open(path)
+        if hasattr(self, 'histogram_eq_enabled') and self.histogram_eq_enabled.get():
+            img = self.apply_histogram_equalization(img)
+        orig_width, orig_height = img.size
+        
+        # Clamp coordinates to valid range
+        image_x = max(0, min(image_x, orig_width))
+        image_y = max(0, min(image_y, orig_height))
         
         # Get canvas dimensions
         canvas_width = self.canvas.winfo_width()
         canvas_height = self.canvas.winfo_height()
         
         # Calculate where this point is now in the scaled/zoomed image (in canvas coordinates)
-        scaled_point_x = image_x * self.zoom_level
-        scaled_point_y = image_y * self.zoom_level
+        # Add padding to convert from image coordinates to scroll region coordinates
+        padding_x = getattr(self, 'image_padding_x', 0)
+        padding_y = getattr(self, 'image_padding_y', 0)
+        scaled_point_x = image_x * self.zoom_level + padding_x
+        scaled_point_y = image_y * self.zoom_level + padding_y
         
         # We want to center this point in the middle of the canvas viewport
         # So the point should appear at canvas_width/2, canvas_height/2
@@ -4566,13 +4581,22 @@ class ImageLabelTool:
         target_left = scaled_point_x - center_x
         target_top = scaled_point_y - center_y
         
-        # Get scroll region dimensions
+        # Get scroll region dimensions and verify they match expectations
         scroll_region = self.canvas.cget("scrollregion")
         if scroll_region:
             parts = scroll_region.split()
             if len(parts) == 4:
                 region_width = float(parts[2])
                 region_height = float(parts[3])
+                
+                # Verify scroll region matches what was set during display
+                expected_width = getattr(self, '_expected_scroll_width', region_width)
+                expected_height = getattr(self, '_expected_scroll_height', region_height)
+                
+                if abs(region_width - expected_width) > 1 or abs(region_height - expected_height) > 1:
+                    print(f"⚠️  REGION MISMATCH: Expected {expected_width:.0f}x{expected_height:.0f}, Got {region_width:.0f}x{region_height:.0f}")
+                    # Use the actual current scroll region
+                    pass
                 
                 # Calculate maximum scrollable distance
                 max_scroll_x = max(0, region_width - canvas_width)
@@ -4582,31 +4606,105 @@ class ImageLabelTool:
                 target_left = scaled_point_x - center_x
                 target_top = scaled_point_y - center_y
                 
-                # Clamp to valid scroll range
+                # Clamp to valid scroll range (work in pixel coordinates)
                 target_left = max(0, min(target_left, max_scroll_x))
                 target_top = max(0, min(target_top, max_scroll_y))
                 
-                # Convert to scroll fractions (0.0 to 1.0)
-                if max_scroll_x > 0:
-                    scroll_x_frac = max(0.0, min(1.0, target_left / max_scroll_x))
+                # Convert to scroll fractions relative to full scroll region size
+                max_x_frac = 0.0
+                if region_width > 0:
+                    scroll_x_frac = max(0.0, min(1.0, target_left / region_width))
+                    max_x_frac = max(0.0, min(1.0 - (canvas_width / region_width), 1.0))
+                    scroll_x_frac = min(scroll_x_frac, max_x_frac)
                 else:
                     scroll_x_frac = 0.0
                     
-                if max_scroll_y > 0:
-                    scroll_y_frac = max(0.0, min(1.0, target_top / max_scroll_y))
+                max_y_frac = 0.0
+                if region_height > 0:
+                    scroll_y_frac = max(0.0, min(1.0, target_top / region_height))
+                    max_y_frac = max(0.0, min(1.0 - (canvas_height / region_height), 1.0))
+                    scroll_y_frac = min(scroll_y_frac, max_y_frac)
                 else:
                     scroll_y_frac = 0.0
                 
-                # Debug info (can be removed in production)
-                # print(f"DEBUG: Centering image point ({image_x:.1f}, {image_y:.1f}) at {self.zoom_level:.2f}x zoom")
-                # print(f"DEBUG: Scroll target: ({target_left:.1f}, {target_top:.1f}) -> fractions: ({scroll_x_frac:.3f}, {scroll_y_frac:.3f})")
+                # Validation: ensure we have reasonable values
+                if scroll_x_frac < 0 or scroll_x_frac > 1 or scroll_y_frac < 0 or scroll_y_frac > 1:
+                    print(f"⚠️  WARNING: Invalid scroll fractions ({scroll_x_frac:.3f}, {scroll_y_frac:.3f})")
+                    return
+                
+                # Debug info for centering analysis
+                print(f"🎯 CENTER: Point ({image_x:.1f}, {image_y:.1f}) at {self.zoom_level:.3f}x zoom")
+                print(f"🎯 CENTER: Canvas ({canvas_width}x{canvas_height}), Region ({region_width:.0f}x{region_height:.0f})")
+                print(f"🎯 CENTER: Max scroll X={max_scroll_x:.0f}, Y={max_scroll_y:.0f}")
+                print(f"🎯 CENTER: Scaled to ({scaled_point_x:.1f}, {scaled_point_y:.1f}) with padding ({padding_x}, {padding_y})")
+                print(f"🎯 CENTER: Target scroll ({target_left:.1f}, {target_top:.1f}) → fractions ({scroll_x_frac:.3f}, {scroll_y_frac:.3f})")
+                
+                # Get current scroll position for debugging
+                old_x_view = self.canvas.xview()
+                old_y_view = self.canvas.yview()
                 
                 # Apply the scroll position to center the clicked point
-                self.canvas.xview_moveto(scroll_x_frac)
-                self.canvas.yview_moveto(scroll_y_frac)
+                # Use a more robust scrolling approach
+                try:
+                    # Method 1: Use moveto with fractions
+                    self.canvas.xview_moveto(scroll_x_frac)
+                    self.canvas.yview_moveto(scroll_y_frac)
+                    
+                    # Force update
+                    self.canvas.update_idletasks()
+                    
+                    # Verify the result
+                    new_x_view = self.canvas.xview()
+                    new_y_view = self.canvas.yview()
+                    
+                    actual_x_frac = new_x_view[0] if len(new_x_view) > 1 else 0
+                    actual_y_frac = new_y_view[0] if len(new_y_view) > 1 else 0
+                    
+                    print(f"🔄 SCROLL: Requested ({scroll_x_frac:.3f}, {scroll_y_frac:.3f}) → Got ({actual_x_frac:.3f}, {actual_y_frac:.3f})")
+                    
+                    # If the scroll didn't work well, try alternative approach
+                    desired_x_frac = scroll_x_frac
+                    desired_y_frac = scroll_y_frac
+                    # Convert fractions back to pixel offsets for accuracy comparisons
+                    actual_left = actual_x_frac * region_width
+                    actual_top = actual_y_frac * region_height
+                    desired_left = desired_x_frac * region_width
+                    desired_top = desired_y_frac * region_height
+                    delta_left = desired_left - actual_left
+                    delta_top = desired_top - actual_top
+
+                    # If we're still off by more than a few pixels, iteratively refine the scroll position
+                    if abs(delta_left) > 2 or abs(delta_top) > 2:
+                        for _ in range(3):
+                            if abs(delta_left) > 2 and region_width > 0:
+                                adjust_frac_x = max(-1.0, min(1.0, delta_left / region_width))
+                                desired_x_frac = max(0.0, min(max_x_frac, actual_x_frac + adjust_frac_x))
+                                self.canvas.xview_moveto(desired_x_frac)
+                                self.canvas.update_idletasks()
+                                new_x_view = self.canvas.xview()
+                                actual_x_frac = new_x_view[0] if len(new_x_view) > 1 else desired_x_frac
+                                actual_left = actual_x_frac * region_width
+                                delta_left = desired_left - actual_left
+                            if abs(delta_top) > 2 and region_height > 0:
+                                adjust_frac_y = max(-1.0, min(1.0, delta_top / region_height))
+                                desired_y_frac = max(0.0, min(max_y_frac, actual_y_frac + adjust_frac_y))
+                                self.canvas.yview_moveto(desired_y_frac)
+                                self.canvas.update_idletasks()
+                                new_y_view = self.canvas.yview()
+                                actual_y_frac = new_y_view[0] if len(new_y_view) > 1 else desired_y_frac
+                                actual_top = actual_y_frac * region_height
+                                delta_top = desired_top - actual_top
+                        
+                except Exception as e:
+                    print(f"⚠️  SCROLL ERROR: {e}")
+                    # Fallback: just use basic moveto
+                    self.canvas.xview_moveto(scroll_x_frac)
+                    self.canvas.yview_moveto(scroll_y_frac)
 
     def double_click_zoom_out(self, event):
         """Handle Ctrl+double-click zoom out (x0.5) centered at click location"""
+        # Debug: uncomment for troubleshooting
+        # print(f"🖱️  CTRL+DOUBLE CLICK ZOOM OUT at ({event.x}, {event.y})")
         self._perform_centered_zoom(event, 0.5)
         return "break"
 
