@@ -36,89 +36,121 @@ except ImportError:
 LABELS = ["(Unclassified)", "no label", "read failure", "incomplete", "unreadable"]
 
 class ImageLabelTool:
-    def generate_unread_session_folder(self):
-        """Export all images from unreadable sessions into a timestamped folder."""
+    def generate_sessions_tree(self):
+        """Create a Sessions Tree folder with one subfolder per session and copy the session images."""
+        from collections import defaultdict
         import shutil
-        from datetime import datetime
-        import os
         from tkinter import messagebox
 
-        # Find all sessions (by session ID) that have at least one unreadable image
-        # Then, for those sessions, collect all images labeled as unreadable, read failure, or incomplete
-        def get_session_id(path):
-            # Use the same logic as get_session_number if available, else fallback to filename prefix
-            try:
-                filename = os.path.basename(path)
-                parts = filename.split('_')
-                if len(parts) >= 2:
-                    return parts[0]  # Use first part as session/trigger ID
+        if not getattr(self, 'folder_path', None):
+            messagebox.showwarning("Sessions Tree", "Please select a folder before generating the sessions tree.")
+            return
+
+        if not hasattr(self, 'all_image_paths') or not self.all_image_paths:
+            messagebox.showinfo("Sessions Tree", "No images are currently loaded. Select a folder first.")
+            return
+
+        sessions = defaultdict(list)
+        for image_path in self.all_image_paths:
+            session_id = self.get_session_number(image_path) or "unknown"
+            sessions[session_id].append(image_path)
+
+        if not sessions:
+            messagebox.showinfo("Sessions Tree", "No sessions were detected in the selected folder.")
+            return
+
+        session_labels_map = self.calculate_session_labels()
+
+        tree_root = os.path.join(self.folder_path, "Sessions Tree")
+
+        try:
+            if os.path.exists(tree_root):
+                shutil.rmtree(tree_root)
+            os.makedirs(tree_root, exist_ok=True)
+        except Exception as exc:
+            messagebox.showerror("Sessions Tree", f"Unable to prepare destination folder:\n{tree_root}\n\n{exc}")
+            return
+
+        total_copied = 0
+        errors = []
+
+        for session_id, session_images in sessions.items():
+            session_label = session_labels_map.get(session_id)
+            if not session_label:
+                # Derive a label using the existing classification logic when necessary
+                classifications = [self.labels.get(path, "(Unclassified)") for path in session_images]
+                classified_only = [cls for cls in classifications if cls != "(Unclassified)"]
+                if classified_only:
+                    session_label = self.determine_session_classification(classified_only)
                 else:
-                    return filename
-            except Exception:
-                return path
+                    session_label = "unlabeled"
 
+            folder_label = self._format_session_label_for_tree(session_label)
+            folder_session_id = self._format_session_identifier_for_tree(session_id)
+            session_folder = os.path.join(tree_root, f"Session_{folder_session_id}_{folder_label}")
 
-        # Step 1: Build a mapping from session_id to all image labels in that session (including unlabeled images)
-        session_labels = {}
-        for path in self.all_image_paths:
-            session_id = get_session_id(path)
-            label = self.labels.get(path, "(Unclassified)")
-            session_labels.setdefault(session_id, []).append(label)
-
-        # Step 2: Find all session IDs that are NOT 'no label' sessions (i.e., not all images are labeled as 'no label')
-        valid_sessions = set()
-        for session_id, labels in session_labels.items():
-            # Exclude sessions where all images are labeled as 'no label'
-            if not labels:
+            try:
+                os.makedirs(session_folder, exist_ok=True)
+            except Exception as exc:
+                errors.append((session_folder, exc))
                 continue
-            if not all(lab == "no label" for lab in labels):
-                valid_sessions.add(session_id)
 
-        if not valid_sessions:
-            messagebox.showinfo("No Valid Sessions", "There are no sessions with images labeled other than 'no label'.")
-            return
-
-        # Step 3: Collect all images in those sessions with label unreadable, read failure, or incomplete
-        # Note: For "read failure" images, exclude those with False NoRead status checked
-        images_to_export = []
-        for path in self.all_image_paths:
-            session_id = get_session_id(path)
-            label = self.labels.get(path, "(Unclassified)")
-            
-            if session_id in valid_sessions:
-                # Include "unreadable" and "incomplete" images unconditionally
-                if label in {"unreadable", "incomplete"}:
-                    images_to_export.append(path)
-                # Include "read failure" images only if they don't have False NoRead status
-                elif label == "read failure" and not self.false_noread.get(path, False):
-                    images_to_export.append(path)
-
-        if not images_to_export:
-            messagebox.showinfo("No Images to Export", "No images with the required labels found in valid sessions.")
-            return
-
-        # Create export folder with timestamp under the selected folder
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if self.folder_path:
-            export_folder = os.path.join(self.folder_path, f"unreadable_sessions_{timestamp}")
-        else:
-            export_folder = os.path.join(os.getcwd(), f"unreadable_sessions_{timestamp}")
-        os.makedirs(export_folder, exist_ok=True)
-
-        # Copy images
-        copied = 0
-        for img_path in images_to_export:
-            if os.path.isfile(img_path):
+            for source_path in session_images:
+                if not os.path.isfile(source_path):
+                    continue
+                if self.false_noread.get(source_path, False):
+                    # Skip False NoRead images entirely, regardless of session classification
+                    continue
+                destination_path = os.path.join(session_folder, os.path.basename(source_path))
                 try:
-                    shutil.copy2(img_path, export_folder)
-                    copied += 1
-                except Exception as e:
-                    print(f"Failed to copy {img_path}: {e}")
+                    shutil.copy2(source_path, destination_path)
+                    total_copied += 1
+                except Exception as exc:
+                    errors.append((source_path, exc))
 
-        messagebox.showinfo(
-            "Export Complete",
-            f"Copied {copied} image(s) (unreadable/read failure*/incomplete) from valid sessions to:\n{export_folder}\n\n*read failure images with False NoRead status were excluded"
-        )
+        if errors:
+            problem_samples = "\n".join(f"- {os.path.basename(path)}: {err}" for path, err in errors[:5])
+            if len(errors) > 5:
+                problem_samples += f"\n...and {len(errors) - 5} more."
+            messagebox.showwarning(
+                "Sessions Tree",
+                f"Created folders for {len(sessions)} session(s) at:\n{tree_root}\n\n"
+                f"Copied {total_copied} image(s), but {len(errors)} item(s) failed:\n{problem_samples}"
+            )
+        else:
+            messagebox.showinfo(
+                "Sessions Tree",
+                f"Created folders for {len(sessions)} session(s) at:\n{tree_root}\n\n"
+                f"Copied {total_copied} image(s)."
+            )
+
+    def _format_session_label_for_tree(self, label):
+        """Return a filesystem-friendly label string such as 'NoLabel' or 'ReadFailure'."""
+        if not label:
+            label = "unlabeled"
+        label = label.replace("(Unclassified)", "Unclassified")
+        parts = re.split(r"[\s/_-]+", label.strip())
+        formatted = "".join(part.capitalize() for part in parts if part)
+        return formatted or "Unlabeled"
+
+    def _format_session_identifier_for_tree(self, session_id):
+        """Normalize the session identifier for folder naming while keeping it recognizable."""
+        if not session_id:
+            return "Unknown"
+        parts = session_id.split('_') if '_' in session_id else session_id.split('-')
+        if parts:
+            base_part = parts[0].lstrip('0') or parts[0] or "0"
+            remainder = parts[1:]
+        else:
+            base_part = session_id
+            remainder = []
+        sanitized_parts = [re.sub(r"[^A-Za-z0-9-]", "", base_part)]
+        for segment in remainder:
+            cleaned = re.sub(r"[^A-Za-z0-9-]", "", segment)
+            if cleaned:
+                sanitized_parts.append(cleaned)
+        sanitized_parts = [part for part in sanitized_parts if part]
+        return "_".join(sanitized_parts) if sanitized_parts else "Unknown"
     def __init__(self, root):
         self.root = root
         self.root.title(f"Aurora FIS Analytics INTERNAL tool v{VERSION}")
@@ -336,12 +368,12 @@ class ImageLabelTool:
                                              padx=8, pady=3, relief="flat")
         self.btn_gen_filter_folder.pack(side=tk.LEFT, padx=(0, 5))
 
-        # Export button for unreadable sessions
-        self.btn_gen_unread_session = tk.Button(toolbar_frame, text="Gen Unread Session", 
-                                               command=self.generate_unread_session_folder,
-                                               bg="#607D8B", fg="white", font=("Arial", 10, "bold"),
-                                               padx=8, pady=3, relief="flat")
-        self.btn_gen_unread_session.pack(side=tk.LEFT, padx=(0, 5))
+        # Export button for sessions tree
+        self.btn_gen_sessions_tree = tk.Button(toolbar_frame, text="Gen Sessions Tree", 
+                                              command=self.generate_sessions_tree,
+                                              bg="#607D8B", fg="white", font=("Arial", 10, "bold"),
+                                              padx=8, pady=3, relief="flat")
+        self.btn_gen_sessions_tree.pack(side=tk.LEFT, padx=(0, 5))
 
         # Export button for session IDs CSV
         self.btn_gen_sessions_csv = tk.Button(toolbar_frame, text="Gen Sessions CSV", 
