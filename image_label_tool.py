@@ -96,7 +96,7 @@ class ImageLabelTool:
                     classifications = [self.labels.get(path, "(Unclassified)") for path in session_images]
                     classified_only = [cls for cls in classifications if cls != "(Unclassified)"]
                     if classified_only:
-                        session_label = self.determine_session_classification(classified_only)
+                        session_label = self.determine_session_classification(classified_only, session_image_paths=session_images)
                     else:
                         session_label = "unlabeled"
 
@@ -159,6 +159,8 @@ class ImageLabelTool:
         if not label:
             label = "unlabeled"
         label = label.replace("(Unclassified)", "Unclassified")
+        # Insert spaces before camel-case boundaries to improve readability
+        label = re.sub(r"(?<!^)(?=[A-Z])", " ", label)
         parts = re.split(r"[\s/_-]+", label.strip())
         formatted = "".join(part.capitalize() for part in parts if part)
         return formatted or "Unlabeled"
@@ -4123,7 +4125,7 @@ class ImageLabelTool:
                 continue
             
             # Use centralized session classification logic
-            session_classification = self.determine_session_classification(classified_labels)
+            session_classification = self.determine_session_classification(classified_labels, session_image_paths=session_paths)
             session_labels_dict[session_id] = session_classification
                 
         return session_labels_dict
@@ -5460,7 +5462,9 @@ class ImageLabelTool:
                     session_data[session_id]['classifications'].add(classification)
                     session_data[session_id]['images'].append({
                         'filename': filename,
-                        'classification': classification
+                        'classification': classification,
+                        'path': image_path,
+                        'false_noread': self.false_noread.get(image_path, False)
                     })
             
             # Apply hierarchy to determine final session classification
@@ -5469,6 +5473,7 @@ class ImageLabelTool:
                 'read failure': set(),
                 'incomplete': set(),
                 'unreadable': set(),
+                'FalseNoRead': set(),
                 'unlabeled': set()
             }
             
@@ -5476,7 +5481,8 @@ class ImageLabelTool:
                 classifications = data['classifications']
                 
                 # Use centralized session classification logic
-                final_classification = self.determine_session_classification(classifications)
+                image_paths_for_session = [img['path'] for img in data['images'] if 'path' in img]
+                final_classification = self.determine_session_classification(classifications, session_image_paths=image_paths_for_session)
                 final_sessions_by_category[final_classification].add(session_id)
             
             # Create timestamp for consistent file naming
@@ -5549,38 +5555,53 @@ class ImageLabelTool:
                     
                     # Check session logic
                     diag_file.write(f"\nSESSION CLASSIFICATION LOGIC (HIERARCHY):\n")
-                    diag_file.write("The session gets classified by the 'worst case' rule:\n")
-                    diag_file.write("1. If ANY image is 'unreadable' -> ENTIRE session is 'unreadable'\n")
-                    diag_file.write("2. Else if ANY image is 'read failure' -> ENTIRE session is 'read failure'\n")
-                    diag_file.write("3. Else if ANY image is 'incomplete' -> ENTIRE session is 'incomplete'\n")
-                    diag_file.write("4. Else if ANY image is 'no label' -> ENTIRE session is 'no label'\n")
-                    diag_file.write("5. Otherwise -> ENTIRE session is 'unlabeled'\n\n")
+                    diag_file.write("The session gets classified by the prioritized rule set:\n")
+                    diag_file.write("1. If any 'read failure' image is not marked False NoRead -> session 'read failure'\n")
+                    diag_file.write("2. Else if any image is 'unreadable' -> session 'unreadable'\n")
+                    diag_file.write("3. Else if any image is 'incomplete' -> session 'unreadable'\n")
+                    diag_file.write("4. Else if only 'read failure' images marked False NoRead remain -> session 'FalseNoRead'\n")
+                    diag_file.write("5. Else if any image is 'no label' -> session 'no label'\n")
+                    diag_file.write("6. Otherwise -> session 'unlabeled'\n\n")
                     
                     # Use centralized session classification logic
                     all_classifications = [item['classification'] for item in session_142_diagnostics]
-                    expected_session_class = self.determine_session_classification(all_classifications)
+                    all_paths = [item['full_path'] for item in session_142_diagnostics]
+                    expected_session_class = self.determine_session_classification(all_classifications, session_image_paths=all_paths)
                     
                     # Determine reason based on classifications present
                     classifications_set = set(all_classifications)
                     has_unreadable = 'unreadable' in classifications_set
                     has_read_failure = 'read failure' in classifications_set
+                    has_read_failure_false = any(
+                        item['classification'] == 'read failure' and self.false_noread.get(item['full_path'], False)
+                        for item in session_142_diagnostics
+                    )
+                    has_read_failure_non_false = any(
+                        item['classification'] == 'read failure' and not self.false_noread.get(item['full_path'], False)
+                        for item in session_142_diagnostics
+                    )
                     has_incomplete = 'incomplete' in classifications_set
                     has_no_label = 'no label' in classifications_set
                     
-                    if expected_session_class == 'unreadable':
-                        reason = "contains at least one 'unreadable' image (highest priority)"
-                    elif expected_session_class == 'read failure':
-                        reason = "contains at least one 'read failure' image (and no 'unreadable')"
-                    elif expected_session_class == 'incomplete':
-                        reason = "contains at least one 'incomplete' image (and no worse classifications)"
+                    if expected_session_class == 'read failure':
+                        reason = "contains at least one 'read failure' image not marked False NoRead"
+                    elif expected_session_class == 'unreadable':
+                        if has_unreadable:
+                            reason = "contains at least one 'unreadable' image"
+                        else:
+                            reason = "contains an 'incomplete' image (treated as unreadable)"
+                    elif expected_session_class == 'FalseNoRead':
+                        reason = "all 'read failure' images are flagged False NoRead"
                     elif expected_session_class == 'no label':
-                        reason = "contains at least one 'no label' image (and no worse classifications)"
+                        reason = "classified images are all 'no label'"
                     else:
                         reason = "no classified images found"
                     
                     diag_file.write(f"ANALYSIS FOR SESSION 142:\n")
                     diag_file.write(f"- Has unreadable: {has_unreadable}\n")
                     diag_file.write(f"- Has read failure: {has_read_failure}\n")
+                    diag_file.write(f"  • With False NoRead: {has_read_failure_false}\n")
+                    diag_file.write(f"  • Without False NoRead: {has_read_failure_non_false}\n")
                     diag_file.write(f"- Has incomplete: {has_incomplete}\n")
                     diag_file.write(f"- Has no label: {has_no_label}\n\n")
                     
@@ -5638,7 +5659,7 @@ class ImageLabelTool:
         
         return None
 
-    def determine_session_classification(self, image_classifications):
+    def determine_session_classification(self, image_classifications, session_image_paths=None):
         """
         CENTRALIZED SESSION CLASSIFICATION LOGIC
         
@@ -5647,34 +5668,59 @@ class ImageLabelTool:
         
         Args:
             image_classifications: set or list of classification strings for images in the session
+            session_image_paths: optional list of image paths belonging to the session
             
         Returns:
             str: The final session classification
             
         Hierarchy (worst to best):
-        1. 'read failure' (highest priority - if ANY image is read failure, session is read failure)
-        1. 'unreadable' (if ANY image is unreadable, session is unreadable)
-        3. 'incomplete' (if ANY image is incomplete, session is unreadable)
-        4. 'no label' (if ANY image is no label and no worse classifications)  
-        5. 'unlabeled' (default - no images have been classified)
+        1. 'read failure' (if any read failure image is NOT marked False NoRead)
+        2. 'unreadable' (if any image is unreadable)
+        3. 'unreadable' (if any image is incomplete)
+        4. 'FalseNoRead' (when all read failure images are flagged False NoRead and no worse labels)
+        5. 'no label' (when remaining classified images are no label)
+        6. 'unlabeled' (default - no images have been classified)
         """
-        if not image_classifications:
-            return 'unlabeled'
-        
-        # Convert to set for efficient lookup
-        classifications_set = set(image_classifications)
+        classifications_list = []
+        read_failure_flags = []  # Track False NoRead status for read failure images
 
-        # Apply hierarchy - worst case wins
-        if 'read failure' in classifications_set:
-            return 'read failure'
-        elif 'unreadable' in classifications_set:
-            return 'unreadable'
-        elif 'incomplete' in classifications_set:
-            return 'unreadable'
-        elif 'no label' in classifications_set:
-            return 'no label'
+        if session_image_paths is not None:
+            for path in session_image_paths:
+                label = self.labels.get(path, '(Unclassified)')
+                if label == '(Unclassified)':
+                    continue
+                classifications_list.append(label)
+                if label == 'read failure':
+                    read_failure_flags.append(self.false_noread.get(path, False))
         else:
+            if image_classifications:
+                for label in image_classifications:
+                    if label == '(Unclassified)':
+                        continue
+                    classifications_list.append(label)
+                    if label == 'read failure':
+                        # Without image paths, assume read failures are genuine (non False NoRead)
+                        read_failure_flags.append(False)
+
+        if not classifications_list:
             return 'unlabeled'
+
+        classifications_set = set(classifications_list)
+        has_read_failure_non_false = any(not flag for flag in read_failure_flags)
+        has_read_failure_entries = bool(read_failure_flags)
+        all_read_failures_false = has_read_failure_entries and all(read_failure_flags)
+
+        if has_read_failure_non_false:
+            return 'read failure'
+        if 'unreadable' in classifications_set:
+            return 'unreadable'
+        if 'incomplete' in classifications_set:
+            return 'unreadable'
+        if has_read_failure_entries and all_read_failures_false:
+            return 'FalseNoRead'
+        if classifications_set and classifications_set.issubset({'no label'}):
+            return 'no label'
+        return 'unlabeled'
 
 
     def diagnose_session_classification(self, target_session_id):
@@ -5711,7 +5757,8 @@ class ImageLabelTool:
         
         # Use centralized session classification logic
         all_classifications = [img['classification'] for img in session_images]
-        expected_session_class = self.determine_session_classification(all_classifications)
+        all_paths = [img['path'] for img in session_images]
+        expected_session_class = self.determine_session_classification(all_classifications, session_image_paths=all_paths)
         
         # Build diagnostic report
         report = f"=== SESSION {target_session_id} ANALYSIS ===\n"
