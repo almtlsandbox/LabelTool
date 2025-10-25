@@ -1309,8 +1309,7 @@ class ImageLabelTool:
                 return
         
         # If no unclassified images found, show a message
-        import tkinter.messagebox as messagebox
-        messagebox.showinfo("Navigation", "No unclassified images found.")
+    messagebox.showinfo("Navigation", "No unclassified images found.")
 
     def jump_to_trigger_id(self):
         """Jump to the first image with the specified trigger ID."""
@@ -1319,7 +1318,6 @@ class ImageLabelTool:
             
         # Check if filter is set to "All images"
         if self.filter_var.get() != "All images":
-            import tkinter.messagebox as messagebox
             messagebox.showwarning("Jump to Trigger ID", 
                                  "Jump to Trigger ID only works when filter is set to 'All images'.")
             return
@@ -1327,21 +1325,19 @@ class ImageLabelTool:
         # Get the trigger ID from the input field
         trigger_id_input = self.jump_trigger_var.get().strip()
         if not trigger_id_input:
-            import tkinter.messagebox as messagebox
             messagebox.showwarning("Jump to Trigger ID", "Please enter a Trigger ID.")
             return
         
         # Normalize the input (remove leading zeros if it's numeric)
+        normalized_trigger_id = None
         try:
             # If it's a number, convert to int then back to string to remove leading zeros
             if trigger_id_input.isdigit():
                 normalized_trigger_id = str(int(trigger_id_input))
             else:
-                import tkinter.messagebox as messagebox
                 messagebox.showwarning("Jump to Trigger ID", "Please enter a valid numeric Trigger ID.")
                 return
         except ValueError:
-            import tkinter.messagebox as messagebox
             messagebox.showwarning("Jump to Trigger ID", "Please enter a valid numeric Trigger ID.")
             return
         
@@ -1374,7 +1370,8 @@ class ImageLabelTool:
                     self.comment_text.bind('<KeyRelease>', self.on_comment_change)
                     self.comment_text.bind('<FocusOut>', self.on_comment_change)
                     return
-        import tkinter.messagebox as messagebox
+        if normalized_trigger_id is None:
+            normalized_trigger_id = trigger_id_input
         messagebox.showinfo("Jump to Trigger ID", 
                            f"No image found with Trigger ID: {normalized_trigger_id}")
 
