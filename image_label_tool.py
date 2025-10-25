@@ -37,7 +37,7 @@ LABELS = ["(Unclassified)", "no label", "read failure", "incomplete", "unreadabl
 
 class ImageLabelTool:
     def generate_sessions_tree(self):
-        """Create a Sessions Tree folder with one subfolder per session and copy the session images."""
+        """Create a Sessions Tree export grouped by session class and session ID."""
         from collections import defaultdict
         import shutil
         from tkinter import messagebox
@@ -71,42 +71,70 @@ class ImageLabelTool:
             messagebox.showerror("Sessions Tree", f"Unable to prepare destination folder:\n{tree_root}\n\n{exc}")
             return
 
+        total_sessions = len(sessions)
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Generating Sessions Tree")
+        progress_window.transient(self.root)
+        progress_window.resizable(False, False)
+        progress_window.protocol("WM_DELETE_WINDOW", lambda: None)
+        progress_label_var = tk.StringVar(value="Preparing...")
+        tk.Label(progress_window, textvariable=progress_label_var, font=("Arial", 11)).pack(padx=20, pady=(20, 10))
+        progress_bar = ttk.Progressbar(progress_window, length=300, mode="determinate", maximum=total_sessions)
+        progress_bar.pack(padx=20, pady=(0, 20))
+        progress_window.update_idletasks()
+
         total_copied = 0
+        session_counts_by_class = defaultdict(int)
         errors = []
+        processed_sessions = 0
 
-        for session_id, session_images in sessions.items():
-            session_label = session_labels_map.get(session_id)
-            if not session_label:
-                # Derive a label using the existing classification logic when necessary
-                classifications = [self.labels.get(path, "(Unclassified)") for path in session_images]
-                classified_only = [cls for cls in classifications if cls != "(Unclassified)"]
-                if classified_only:
-                    session_label = self.determine_session_classification(classified_only)
-                else:
-                    session_label = "unlabeled"
+        try:
+            for session_id, session_images in sessions.items():
+                session_label = session_labels_map.get(session_id)
+                if not session_label:
+                    # Derive a label using the existing classification logic when necessary
+                    classifications = [self.labels.get(path, "(Unclassified)") for path in session_images]
+                    classified_only = [cls for cls in classifications if cls != "(Unclassified)"]
+                    if classified_only:
+                        session_label = self.determine_session_classification(classified_only)
+                    else:
+                        session_label = "unlabeled"
 
-            folder_label = self._format_session_label_for_tree(session_label)
-            folder_session_id = self._format_session_identifier_for_tree(session_id)
-            session_folder = os.path.join(tree_root, f"Session_{folder_session_id}_{folder_label}")
+                folder_label = self._format_session_label_for_tree(session_label)
+                folder_session_id = self._format_session_identifier_for_tree(session_id)
+                class_folder = os.path.join(tree_root, folder_label)
+                session_folder = os.path.join(class_folder, f"Session_{folder_session_id}_{folder_label}")
 
-            try:
-                os.makedirs(session_folder, exist_ok=True)
-            except Exception as exc:
-                errors.append((session_folder, exc))
-                continue
-
-            for source_path in session_images:
-                if not os.path.isfile(source_path):
-                    continue
-                if self.false_noread.get(source_path, False):
-                    # Skip False NoRead images entirely, regardless of session classification
-                    continue
-                destination_path = os.path.join(session_folder, os.path.basename(source_path))
                 try:
-                    shutil.copy2(source_path, destination_path)
-                    total_copied += 1
+                    os.makedirs(class_folder, exist_ok=True)
+                    os.makedirs(session_folder, exist_ok=True)
                 except Exception as exc:
-                    errors.append((source_path, exc))
+                    errors.append((session_folder, exc))
+                    continue
+
+                session_counts_by_class[folder_label] += 1
+
+                for source_path in session_images:
+                    if not os.path.isfile(source_path):
+                        continue
+                    if self.false_noread.get(source_path, False):
+                        # Skip False NoRead images entirely, regardless of session classification
+                        continue
+                    destination_path = os.path.join(session_folder, os.path.basename(source_path))
+                    try:
+                        shutil.copy2(source_path, destination_path)
+                        total_copied += 1
+                    except Exception as exc:
+                        errors.append((source_path, exc))
+
+                processed_sessions += 1
+                progress_bar['value'] = processed_sessions
+                progress_label_var.set(f"Processing session {processed_sessions}/{total_sessions}: {folder_session_id}")
+                progress_window.update_idletasks()
+        finally:
+            progress_window.destroy()
+
+        total_sessions_exported = sum(session_counts_by_class.values())
 
         if errors:
             problem_samples = "\n".join(f"- {os.path.basename(path)}: {err}" for path, err in errors[:5])
@@ -114,14 +142,16 @@ class ImageLabelTool:
                 problem_samples += f"\n...and {len(errors) - 5} more."
             messagebox.showwarning(
                 "Sessions Tree",
-                f"Created folders for {len(sessions)} session(s) at:\n{tree_root}\n\n"
+                f"Created class folders with {total_sessions_exported} session(s) at:\n{tree_root}\n\n"
                 f"Copied {total_copied} image(s), but {len(errors)} item(s) failed:\n{problem_samples}"
             )
         else:
+            breakdown_lines = [f"- {label}: {count}" for label, count in sorted(session_counts_by_class.items())]
+            breakdown_text = "\n".join(breakdown_lines) if breakdown_lines else "(no sessions)"
             messagebox.showinfo(
                 "Sessions Tree",
-                f"Created folders for {len(sessions)} session(s) at:\n{tree_root}\n\n"
-                f"Copied {total_copied} image(s)."
+                f"Created class folders with {total_sessions_exported} session(s) at:\n{tree_root}\n\n"
+                f"Copied {total_copied} image(s).\n\nBreakdown:\n{breakdown_text}"
             )
 
     def _format_session_label_for_tree(self, label):
