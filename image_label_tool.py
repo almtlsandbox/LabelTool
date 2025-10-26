@@ -2277,7 +2277,8 @@ class ImageLabelTool:
         """Compute derived metrics for the Log tab summary"""
         session_labels_dict = self.calculate_session_labels()
         session_ocr_status = self.calculate_session_ocr_readable_status()
-        sessions_false_noread = self.calculate_sessions_with_false_noread()
+        session_counts = self.calculate_session_category_counts(session_labels_dict)
+        sessions_false_noread = session_counts['sessions_false_noread']
 
         start_display = log_date_info['start_date'] if log_date_info else "Not available"
         end_display = log_date_info['end_date'] if log_date_info else "Not available"
@@ -2298,14 +2299,11 @@ class ImageLabelTool:
         false_triggers = results.get('false_triggers', 0)
         valid_sessions = max(reading_sessions - false_triggers, 0)
 
-        no_code = analysis_data.get('no_code_count', 0)
-        read_failure = analysis_data.get('read_failure_count', 0)
-        unreadable = analysis_data.get('unreadable_count', 0)
+        no_code = session_counts['sessions_no_code']
+        read_failure = session_counts['sessions_read_failure']
+        unreadable = session_counts['sessions_unreadable']
         effective_read_failure = max(read_failure - sessions_false_noread, 0)
-        fail_reading_sessions = max(
-            analysis_data.get('total_sessions', no_code + read_failure + unreadable) - sessions_false_noread,
-            0
-        )
+        fail_reading_sessions = session_counts['adjusted_failed_sessions']
 
         total_read_sessions = max(valid_sessions - fail_reading_sessions, 0)
         total_readable_without_ocr = max(total_read_sessions - no_code - unreadable, 0)
@@ -2456,14 +2454,14 @@ class ImageLabelTool:
         write_line("Reading sessions (unique trigger ID detected): ", metrics['reading_sessions'], bold_value=True)
         write_line("False triggers: ", metrics['false_triggers'], bold_value=True)
         write_line("Valid sessions (effective parcel count): ", metrics['valid_sessions'])
-        write_line("Fail Reading sessions (excl. False NoRead): ", metrics['fail_reading_sessions'], bold_value=True)
+        write_line("Fail Reading sessions: ", metrics['fail_reading_sessions'], bold_value=True)
         write_line("Total read sessions (excluding OCR): ", metrics['total_read_sessions'])
 
         text_widget.insert(tk.END, "\n", 'normal')
 
         write_heading("READING ANALYSIS")
         write_line(
-            "Fail Reading sessions (excl. False NoRead): ",
+            "Fail Reading sessions: ",
             metrics['fail_reading_sessions'],
             bold_value=True,
             line_tag=fail_line_tag,
@@ -2766,28 +2764,35 @@ class ImageLabelTool:
         if not hasattr(self, 'all_image_paths') or not self.all_image_paths:
             return {'no_code_count': 0, 'read_failure_count': 0, 'ocr_readable_count': 0, 'total_sessions': 0, 'actual_sessions': 0, 'total_entered': 0}
             
-        # Calculate session labels
+        # Calculate session labels and consistent category counts
         session_labels_dict = self.calculate_session_labels()
-        
-        # Count sessions by category
-        no_code_count = sum(1 for label in session_labels_dict.values() if label == "no label")
-        read_failure_count = sum(1 for label in session_labels_dict.values() if label == "read failure")
-        unreadable_count = sum(1 for label in session_labels_dict.values() if label == "unreadable")
+        session_counts = self.calculate_session_category_counts(session_labels_dict)
         ocr_readable_count = self.calculate_sessions_with_ocr_readable()
-        
+
         # Get actual sessions count (number of sessions found in images)
-        actual_sessions = len(session_labels_dict)
-        
+        actual_sessions = session_counts['total_sessions']
+
         # Get total entered (expected total from user input)
-        total_entered = int(self.total_sessions_var.get()) if self.total_sessions_var.get() else 0
-        failed_sessions_total = no_code_count + read_failure_count + unreadable_count
-        
+        try:
+            total_entered = int(self.total_sessions_var.get()) if self.total_sessions_var.get() else 0
+        except ValueError:
+            total_entered = 0
+
+        failed_sessions_total = (
+            session_counts['sessions_no_code']
+            + session_counts['sessions_read_failure']
+            + session_counts['sessions_unreadable']
+        )
+
         return {
-            'no_code_count': no_code_count,
-            'read_failure_count': read_failure_count,
-            'unreadable_count': unreadable_count,
+            'no_code_count': session_counts['sessions_no_code'],
+            'read_failure_count': session_counts['sessions_read_failure'],
+            'unreadable_count': session_counts['sessions_unreadable'],
+            'sessions_false_noread': session_counts['sessions_false_noread'],
+            'sessions_unlabeled': session_counts['sessions_unlabeled'],
+            'adjusted_failed_sessions': session_counts['adjusted_failed_sessions'],
             'ocr_readable_count': ocr_readable_count,
-            'total_sessions': len(session_labels_dict),
+            'total_sessions': session_counts['total_sessions'],
             'actual_sessions': actual_sessions,
             'total_entered': total_entered,
             'failed_sessions_total': failed_sessions_total
@@ -2869,14 +2874,14 @@ class ImageLabelTool:
             report_lines.append(f"Reading sessions (unique trigger ID detected): {metrics['reading_sessions']}")
             report_lines.append(f"False triggers: {metrics['false_triggers']}")
             report_lines.append(f"Valid sessions (effective parcel count): {metrics['valid_sessions']}")
-            report_lines.append(f"Fail Reading sessions (excl. False NoRead): {metrics['fail_reading_sessions']}")
+            report_lines.append(f"Fail Reading sessions: {metrics['fail_reading_sessions']}")
             report_lines.append(f"Total read sessions (excluding OCR): {metrics['total_read_sessions']}")
 
             report_lines.append("")
 
             report_lines.append("READING ANALYSIS")
             report_lines.append("=" * len("READING ANALYSIS"))
-            report_lines.append(f"Fail Reading sessions (excl. False NoRead): {metrics['fail_reading_sessions']}")
+            report_lines.append(f"Fail Reading sessions: {metrics['fail_reading_sessions']}")
             report_lines.append(f"Sessions with no code (no-label/code): {metrics['no_code_count']}")
             report_lines.append(f"Sessions with read failure (with label but no-read): {metrics['read_failure_count']}")
             report_lines.append(f"Sessions with unreadable code: {metrics['unreadable_count']}")
@@ -4266,6 +4271,35 @@ class ImageLabelTool:
 
         return false_noread_sessions
 
+    def calculate_session_category_counts(self, session_labels_dict=None):
+        """Return consistent session category totals for analysis and log displays."""
+        if session_labels_dict is None:
+            session_labels_dict = self.calculate_session_labels()
+
+        counts = {
+            'total_sessions': len(session_labels_dict),
+            'sessions_no_code': 0,
+            'sessions_read_failure': 0,
+            'sessions_unreadable': 0,
+            'sessions_false_noread': 0,
+            'sessions_unlabeled': 0
+        }
+
+        for label in session_labels_dict.values():
+            if label == "no label":
+                counts['sessions_no_code'] += 1
+            elif label == "read failure":
+                counts['sessions_read_failure'] += 1
+            elif label == "unreadable":
+                counts['sessions_unreadable'] += 1
+            elif label == "FalseNoRead":
+                counts['sessions_false_noread'] += 1
+            elif label == "unlabeled":
+                counts['sessions_unlabeled'] += 1
+
+        counts['adjusted_failed_sessions'] = max(counts['total_sessions'] - counts['sessions_false_noread'], 0)
+        return counts
+
     def calculate_net_rates_centralized(self, total_entered, actual_sessions, sessions_read_failure, sessions_false_noread, sessions_ocr_readable, sessions_ocr_readable_non_failure):
         """Centralized calculation for net read rates and related metrics"""
         # Calculate base totals
@@ -4343,26 +4377,15 @@ class ImageLabelTool:
             return
 
         session_labels_dict = self.calculate_session_labels()
-        
-        # Count sessions by different categories
-        total_sessions = len(session_labels_dict)
-        sessions_no_code = 0
-        sessions_read_failure = 0
-        sessions_unreadable_code = 0
-        sessions_false_noread = 0
-        sessions_unlabeled = 0
+        session_counts = self.calculate_session_category_counts(session_labels_dict)
 
-        for session_label in session_labels_dict.values():
-            if session_label == "no label":
-                sessions_no_code += 1
-            elif session_label == "read failure":
-                sessions_read_failure += 1
-            elif session_label == "unreadable":
-                sessions_unreadable_code += 1
-            elif session_label == "FalseNoRead":
-                sessions_false_noread += 1
-            elif session_label == "unlabeled":
-                sessions_unlabeled += 1
+        # Count sessions by different categories
+        total_sessions = session_counts['total_sessions']
+        sessions_no_code = session_counts['sessions_no_code']
+        sessions_read_failure = session_counts['sessions_read_failure']
+        sessions_unreadable_code = session_counts['sessions_unreadable']
+        sessions_false_noread = session_counts['sessions_false_noread']
+        sessions_unlabeled = session_counts['sessions_unlabeled']
 
         # Calculate sessions with OCR readable images (separate from primary classification)
         sessions_ocr_readable = self.calculate_sessions_with_ocr_readable()
@@ -4391,7 +4414,7 @@ class ImageLabelTool:
         )
         integrity_ok = (integrity_sum == total_sessions)
 
-        adjusted_failed_sessions = max(total_sessions - sessions_false_noread, 0)
+        adjusted_failed_sessions = session_counts['adjusted_failed_sessions']
 
         # Format the display
         lines = [
@@ -4429,21 +4452,15 @@ class ImageLabelTool:
 
         # Get current session statistics
         session_labels_dict = self.calculate_session_labels()
-        actual_sessions = len(session_labels_dict)
-        
-        sessions_no_code = 0
-        sessions_read_failure = 0
-        
-        for session_label in session_labels_dict.values():
-            if session_label == "no label":
-                sessions_no_code += 1
-            elif session_label == "read failure":
-                sessions_read_failure += 1
+        session_counts = self.calculate_session_category_counts(session_labels_dict)
+        actual_sessions = session_counts['total_sessions']
+        sessions_no_code = session_counts['sessions_no_code']
+        sessions_read_failure = session_counts['sessions_read_failure']
         
         # Calculate OCR readable sessions and False NoRead sessions
         sessions_ocr_readable = self.calculate_sessions_with_ocr_readable()
         sessions_ocr_readable_non_failure = self.calculate_ocr_readable_non_failure_sessions()
-        sessions_false_noread = self.calculate_sessions_with_false_noread()
+        sessions_false_noread = session_counts['sessions_false_noread']
         
         # Use centralized calculation
         net_rates = self.calculate_net_rates_centralized(
