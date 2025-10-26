@@ -2296,7 +2296,10 @@ class ImageLabelTool:
         read_failure = analysis_data.get('read_failure_count', 0)
         unreadable = analysis_data.get('unreadable_count', 0)
         effective_read_failure = max(read_failure - sessions_false_noread, 0)
-        fail_reading_sessions = max(no_code + effective_read_failure + unreadable, 0)
+        fail_reading_sessions = max(
+            analysis_data.get('total_sessions', no_code + read_failure + unreadable) - sessions_false_noread,
+            0
+        )
 
         total_read_sessions = max(valid_sessions - fail_reading_sessions, 0)
         total_readable_without_ocr = max(total_read_sessions - no_code - unreadable, 0)
@@ -2417,18 +2420,25 @@ class ImageLabelTool:
         text_widget.tag_configure('header', font=("Arial", 11, "bold"))
         text_widget.tag_configure('bold', font=("Arial", 10, "bold"))
         text_widget.tag_configure('normal', font=("Arial", 10))
+        text_widget.tag_configure('error', font=("Arial", 10, "bold"), foreground="red")
+        text_widget.tag_configure('readrate', font=("Arial", 10, "bold"), foreground="#0D47A1")
 
-        def write_line(prefix, value=None, bold_value=False):
+        def write_line(prefix, value=None, bold_value=False, line_tag=None, value_tag=None):
+            prefix_tag = line_tag if line_tag else 'normal'
             if prefix:
-                text_widget.insert(tk.END, prefix, 'normal')
+                text_widget.insert(tk.END, prefix, prefix_tag)
             if value is not None:
-                tag = 'bold' if bold_value else 'normal'
-                text_widget.insert(tk.END, str(value), tag)
-            text_widget.insert(tk.END, "\n", 'normal')
+                chosen_tag = value_tag if value_tag else ('bold' if bold_value else prefix_tag)
+                text_widget.insert(tk.END, str(value), chosen_tag)
+            text_widget.insert(tk.END, "\n", prefix_tag)
 
         def write_heading(title):
             text_widget.insert(tk.END, f"{title}\n", 'header')
             text_widget.insert(tk.END, f"{'=' * len(title)}\n", 'normal')
+
+        reading_sanity_sum = metrics['no_code_count'] + metrics['read_failure_count'] + metrics['unreadable_count']
+        fail_sanity_ok = (metrics['fail_reading_sessions'] == reading_sanity_sum)
+        fail_line_tag = 'error' if not fail_sanity_ok else None
 
         write_line("Start: ", metrics['start_display'], bold_value=True)
         write_line("End: ", metrics['end_display'], bold_value=True)
@@ -2446,7 +2456,13 @@ class ImageLabelTool:
         text_widget.insert(tk.END, "\n", 'normal')
 
         write_heading("READING ANALYSIS")
-        write_line("Fail Reading sessions (excl. False NoRead): ", metrics['fail_reading_sessions'], bold_value=True)
+        write_line(
+            "Fail Reading sessions (excl. False NoRead): ",
+            metrics['fail_reading_sessions'],
+            bold_value=True,
+            line_tag=fail_line_tag,
+            value_tag=fail_line_tag
+        )
         write_line("Sessions with no code (no-label/code): ", metrics['no_code_count'], bold_value=True)
         write_line("Sessions with read failure (with label but no-read): ", metrics['read_failure_count'], bold_value=True)
         write_line("Sessions with unreadable code: ", metrics['unreadable_count'], bold_value=True)
@@ -2463,12 +2479,42 @@ class ImageLabelTool:
         text_widget.insert(tk.END, "\n", 'normal')
 
         write_heading("READ RATE")
-        write_line("Decoder Net Read Rate (excluding OCR): ", metrics['decoder_net_rate_text'])
-        write_line("System Gross Read Rate: ", metrics['system_gross_read_rate_text'])
-        write_line("System Net Read Rate (excluding OCR): ", metrics['system_net_rate_excl_text'])
-        write_line("System Net Read Rate (including read failure recovered by OCR): ", metrics['system_net_rate_incl_read_failure_ocr_text'])
-        write_line("System Net Read Rate (including all recovered by OCR): ", metrics['system_net_rate_incl_all_ocr_text'])
-        write_line("System read failure improvement thanks to OCR: ", metrics['system_read_failure_improvement_text'])
+        write_line(
+            "Decoder Net Read Rate (excluding OCR): ",
+            metrics['decoder_net_rate_text'],
+            line_tag='readrate',
+            value_tag='readrate'
+        )
+        write_line(
+            "System Gross Read Rate: ",
+            metrics['system_gross_read_rate_text'],
+            line_tag='readrate',
+            value_tag='readrate'
+        )
+        write_line(
+            "System Net Read Rate (excluding OCR): ",
+            metrics['system_net_rate_excl_text'],
+            line_tag='readrate',
+            value_tag='readrate'
+        )
+        write_line(
+            "System Net Read Rate (including read failure recovered by OCR): ",
+            metrics['system_net_rate_incl_read_failure_ocr_text'],
+            line_tag='readrate',
+            value_tag='readrate'
+        )
+        write_line(
+            "System Net Read Rate (including all recovered by OCR): ",
+            metrics['system_net_rate_incl_all_ocr_text'],
+            line_tag='readrate',
+            value_tag='readrate'
+        )
+        write_line(
+            "System read failure improvement thanks to OCR: ",
+            metrics['system_read_failure_improvement_text'],
+            line_tag='readrate',
+            value_tag='readrate'
+        )
 
         if metrics.get('log_file_path'):
             text_widget.insert(tk.END, "\n", 'normal')
