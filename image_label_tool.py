@@ -1309,7 +1309,7 @@ class ImageLabelTool:
                 return
         
         # If no unclassified images found, show a message
-    messagebox.showinfo("Navigation", "No unclassified images found.")
+        messagebox.showinfo("Navigation", "No unclassified images found.")
 
     def jump_to_trigger_id(self):
         """Jump to the first image with the specified trigger ID."""
@@ -2280,6 +2280,7 @@ class ImageLabelTool:
         start_dt = self.parse_log_timestamp(start_raw) or self.parse_log_timestamp(start_display)
         end_dt = self.parse_log_timestamp(end_raw) or self.parse_log_timestamp(end_display)
 
+        duration_seconds = None
         duration_hours_value = None
         if start_dt and end_dt:
             duration_seconds = (end_dt - start_dt).total_seconds()
@@ -2296,7 +2297,7 @@ class ImageLabelTool:
         fail_reading_sessions = max(no_code + read_failure + unreadable, 0)
 
         total_read_sessions = max(valid_sessions - fail_reading_sessions, 0)
-        total_readable_without_ocr = max(total_read_sessions - no_code - unreadable, 0)
+        total_readable_without_ocr = max(valid_sessions - no_code - unreadable, 0)
 
         ocr_recovered_in_read_failure = sum(
             1 for session_id, is_ocr in session_ocr_status.items()
@@ -2335,7 +2336,11 @@ class ImageLabelTool:
         def pct_text(value):
             return f"{value:.2f}%" if value is not None else "N/A"
 
-        duration_display = f"{duration_hours_value:.2f} h" if duration_hours_value is not None else "N/A"
+        duration_display = (
+            self.format_duration_hms(duration_seconds)
+            if duration_seconds is not None and duration_seconds >= 0
+            else "N/A"
+        )
         improvement_text = (
             f"{system_read_failure_improvement:+.2f}%" if system_read_failure_improvement is not None else "N/A"
         )
@@ -2685,6 +2690,19 @@ class ImageLabelTool:
                 continue
 
         return None
+
+    def format_duration_hms(self, total_seconds):
+        """Format a duration in seconds as HH:MM:SS"""
+        try:
+            total_seconds = int(round(total_seconds))
+        except (TypeError, ValueError):
+            return "N/A"
+
+        sign = "-" if total_seconds < 0 else ""
+        total_seconds = abs(total_seconds)
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{sign}{hours:02d}:{minutes:02d}:{seconds:02d}"
     
     def get_analysis_data(self):
         """Get analysis data from current image classifications"""
