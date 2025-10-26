@@ -1930,19 +1930,21 @@ class ImageLabelTool:
         
         sessions_no_code = 0
         sessions_read_failure = 0
-        sessions_ocr_readable = 0
-        
+        sessions_unreadable_code = 0
+        sessions_false_noread = 0
+
         for session_label in session_labels_dict.values():
             if session_label == "no label":
                 sessions_no_code += 1
             elif session_label == "read failure":
                 sessions_read_failure += 1
-        
+            elif session_label == "unreadable":
+                sessions_unreadable_code += 1
+            elif session_label == "FalseNoRead":
+                sessions_false_noread += 1
+
         # Calculate sessions with OCR readable images (separate from primary classification)
         sessions_ocr_readable = self.calculate_sessions_with_ocr_readable()
-        
-        # Calculate sessions with unreadable code (excluding no_code and read_failure)
-        sessions_unreadable_code = actual_sessions - sessions_no_code - sessions_read_failure
         
         # Calculate readable sessions using NEW formulas:
         # Total readable w/o OCR = total entered - session number + read failure
@@ -1957,7 +1959,7 @@ class ImageLabelTool:
         # Calculate successful reads (using w/ OCR total)
         sessions_successful_reads = total_readable_incl_ocr - sessions_read_failure
         
-        print(f"DEBUG: Using NEW calculation formulas:")
+        print("DEBUG: Using NEW calculation formulas:")
         print(f"  - Total entered: {total_entered}")
         print(f"  - Actual sessions found: {actual_sessions}")
         print(f"  - Sessions no label: {sessions_no_code}")
@@ -1965,6 +1967,7 @@ class ImageLabelTool:
         print(f"  - Sessions with OCR readable: {sessions_ocr_readable}")
         print(f"  - Sessions OCR readable (non-failure): {sessions_ocr_readable_non_failure}")
         print(f"  - Sessions unreadable code: {sessions_unreadable_code}")
+        print(f"  - Sessions False NoRead: {sessions_false_noread}")
         print(f"  - Total readable (excl OCR): {total_readable_excl_ocr}")
         print(f"  - Total readable (incl OCR): {total_readable_incl_ocr}")
         print(f"  - Successful reads: {sessions_successful_reads}")
@@ -1979,6 +1982,8 @@ class ImageLabelTool:
             session_stats["Sessions with OCR Recovered"] = sessions_ocr_readable
         if sessions_unreadable_code > 0:
             session_stats["Sessions with Unreadable Code"] = sessions_unreadable_code
+        if sessions_false_noread > 0:
+            session_stats["Sessions False NoRead"] = sessions_false_noread
         if sessions_successful_reads > 0:
             session_stats["Sessions with Successful Reads"] = sessions_successful_reads
         
@@ -2021,6 +2026,7 @@ class ImageLabelTool:
             "Sessions with Read Failure": "#F44336",     # Red
             "Sessions with OCR Recovered": "#2196F3",     # Blue
             "Sessions with Unreadable Code": "#FF9800",  # Orange
+            "Sessions False NoRead": "#9C27B0",          # Purple
             "Sessions with Successful Reads": "#4CAF50"  # Green
         }
         
@@ -4342,22 +4348,24 @@ class ImageLabelTool:
         total_sessions = len(session_labels_dict)
         sessions_no_code = 0
         sessions_read_failure = 0
-        sessions_ocr_readable = 0
-        
+        sessions_unreadable_code = 0
+        sessions_false_noread = 0
+        sessions_unlabeled = 0
+
         for session_label in session_labels_dict.values():
             if session_label == "no label":
                 sessions_no_code += 1
             elif session_label == "read failure":
                 sessions_read_failure += 1
-        
+            elif session_label == "unreadable":
+                sessions_unreadable_code += 1
+            elif session_label == "FalseNoRead":
+                sessions_false_noread += 1
+            elif session_label == "unlabeled":
+                sessions_unlabeled += 1
+
         # Calculate sessions with OCR readable images (separate from primary classification)
         sessions_ocr_readable = self.calculate_sessions_with_ocr_readable()
-        
-        # Calculate sessions with False NoRead images
-        sessions_false_noread = self.calculate_sessions_with_false_noread()
-        
-        # Calculate sessions with unreadable code (excluding no_code and read_failure)
-        sessions_unreadable_code = total_sessions - sessions_no_code - sessions_read_failure
         
         # Calculate total readable sessions using expected total from text field
         try:
@@ -4373,8 +4381,14 @@ class ImageLabelTool:
             total_readable_excl_ocr = "N/A (Enter expected total)"
             total_readable_incl_ocr = "N/A (Enter expected total)"
         
-        # Integrity check: sessions_no_code + sessions_read_failure + sessions_unreadable_code == total_sessions
-        integrity_sum = sessions_no_code + sessions_read_failure + sessions_unreadable_code
+        # Integrity check: all categorized sessions should equal total sessions
+        integrity_sum = (
+            sessions_no_code
+            + sessions_read_failure
+            + sessions_unreadable_code
+            + sessions_false_noread
+            + sessions_unlabeled
+        )
         integrity_ok = (integrity_sum == total_sessions)
 
         adjusted_failed_sessions = max(total_sessions - sessions_false_noread, 0)
@@ -4389,7 +4403,15 @@ class ImageLabelTool:
             f"Sessions False NoRead: {sessions_false_noread}",
             f"Total readable sessions (excl. OCR): {total_readable_excl_ocr}",
             f"Total readable sessions (incl. OCR): {total_readable_incl_ocr}",
-            f"Integrity check (raw): {sessions_no_code} + {sessions_read_failure} + {sessions_unreadable_code} = {integrity_sum}" + (" (OK)" if integrity_ok else f" (❌ MISMATCH: should be {total_sessions})")
+            (
+                "Integrity check (raw): "
+                f"{sessions_no_code} (no label) + "
+                f"{sessions_read_failure} (read failure) + "
+                f"{sessions_unreadable_code} (unreadable) + "
+                f"{sessions_false_noread} (False NoRead) + "
+                f"{sessions_unlabeled} (unlabeled) = {integrity_sum}"
+                + (" (OK)" if integrity_ok else f" (❌ MISMATCH: should be {total_sessions})")
+            )
         ]
         self.session_count_var.set("\n".join(lines))
 
@@ -5641,9 +5663,9 @@ class ImageLabelTool:
                     diag_file.write(f"\nSESSION CLASSIFICATION LOGIC (HIERARCHY):\n")
                     diag_file.write("The session gets classified by the prioritized rule set:\n")
                     diag_file.write("1. If any 'read failure' image is not marked False NoRead -> session 'read failure'\n")
-                    diag_file.write("2. Else if any image is 'unreadable' -> session 'unreadable'\n")
-                    diag_file.write("3. Else if any image is 'incomplete' -> session 'unreadable'\n")
-                    diag_file.write("4. Else if only 'read failure' images marked False NoRead remain -> session 'FalseNoRead'\n")
+                    diag_file.write("2. Else if every classified image is a 'read failure' flagged False NoRead -> session 'FalseNoRead'\n")
+                    diag_file.write("3. Else if any image is 'unreadable' -> session 'unreadable'\n")
+                    diag_file.write("4. Else if any image is 'incomplete' -> session 'unreadable'\n")
                     diag_file.write("5. Else if any image is 'no label' -> session 'no label'\n")
                     diag_file.write("6. Otherwise -> session 'unlabeled'\n\n")
                     
