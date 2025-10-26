@@ -4234,7 +4234,7 @@ class ImageLabelTool:
         return ocr_readable_sessions
 
     def calculate_sessions_with_false_noread(self):
-        """Calculate number of sessions that have at least one False NoRead image"""
+        """Count sessions where every image is explicitly marked as False NoRead."""
         if not hasattr(self, 'all_image_paths') or not self.all_image_paths:
             return 0
         
@@ -4247,14 +4247,17 @@ class ImageLabelTool:
                     sessions[session_id] = []
                 sessions[session_id].append(path)
         
-        # Count sessions with at least one False NoRead image
+        # Count sessions only when every image in the session is flagged False NoRead
         false_noread_sessions = 0
         for session_id, session_paths in sessions.items():
-            for path in session_paths:
-                if self.false_noread.get(path, False):
-                    false_noread_sessions += 1
-                    break  # Found one False NoRead image in this session, move to next session
-        
+            if not session_paths:
+                continue
+
+            # All images must explicitly be marked False NoRead
+            all_marked_false = all(self.false_noread.get(path, False) for path in session_paths)
+            if all_marked_false:
+                false_noread_sessions += 1
+
         return false_noread_sessions
 
     def calculate_net_rates_centralized(self, total_entered, actual_sessions, sessions_read_failure, sessions_false_noread, sessions_ocr_readable, sessions_ocr_readable_non_failure):
