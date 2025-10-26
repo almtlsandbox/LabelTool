@@ -5757,13 +5757,13 @@ class ImageLabelTool:
         Returns:
             str: The final session classification
             
-        Hierarchy (worst to best):
-        1. 'read failure' (if any read failure image is NOT marked False NoRead)
-        2. 'unreadable' (if any image is unreadable)
-        3. 'unreadable' (if any image is incomplete)
-        4. 'FalseNoRead' (when all read failure images are flagged False NoRead and no worse labels)
-        5. 'no label' (when remaining classified images are no label)
-        6. 'unlabeled' (default - no images have been classified)
+    Hierarchy (worst to best):
+    1. 'read failure' (if the session has any read failure image NOT marked False NoRead)
+    2. 'FalseNoRead' (if every classified image is a read failure flagged False NoRead)
+    3. 'unreadable' (if any image is unreadable and there are no read failures)
+    4. 'unreadable' (if any image is incomplete and there are no read failures)
+    5. 'no label' (when all classified images are no label)
+    6. 'unlabeled' (when the session still has at least one unclassified image)
         """
         classifications_list = []
         read_failure_flags = []  # Track False NoRead status for read failure images
@@ -5796,12 +5796,12 @@ class ImageLabelTool:
 
         if has_read_failure_non_false:
             return 'read failure'
+        if has_read_failure_entries and all_read_failures_false:
+            return 'FalseNoRead'
         if 'unreadable' in classifications_set:
             return 'unreadable'
         if 'incomplete' in classifications_set:
             return 'unreadable'
-        if has_read_failure_entries and all_read_failures_false:
-            return 'FalseNoRead'
         if classifications_set and classifications_set.issubset({'no label'}):
             return 'no label'
         return 'unlabeled'
