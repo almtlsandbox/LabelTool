@@ -2271,6 +2271,7 @@ class ImageLabelTool:
         """Compute derived metrics for the Log tab summary"""
         session_labels_dict = self.calculate_session_labels()
         session_ocr_status = self.calculate_session_ocr_readable_status()
+        sessions_false_noread = self.calculate_sessions_with_false_noread()
 
         start_display = log_date_info['start_date'] if log_date_info else "Not available"
         end_display = log_date_info['end_date'] if log_date_info else "Not available"
@@ -2294,10 +2295,11 @@ class ImageLabelTool:
         no_code = analysis_data.get('no_code_count', 0)
         read_failure = analysis_data.get('read_failure_count', 0)
         unreadable = analysis_data.get('unreadable_count', 0)
-        fail_reading_sessions = max(no_code + read_failure + unreadable, 0)
+        effective_read_failure = max(read_failure - sessions_false_noread, 0)
+        fail_reading_sessions = max(no_code + effective_read_failure + unreadable, 0)
 
         total_read_sessions = max(valid_sessions - fail_reading_sessions, 0)
-        total_readable_without_ocr = max(valid_sessions - no_code - unreadable, 0)
+        total_readable_without_ocr = max(total_read_sessions - no_code - unreadable, 0)
 
         ocr_recovered_in_read_failure = sum(
             1 for session_id, is_ocr in session_ocr_status.items()
@@ -2319,12 +2321,12 @@ class ImageLabelTool:
         system_net_rate_incl_all_ocr = None
         if valid_sessions > 0:
             system_gross_read_rate = (total_read_sessions / valid_sessions) * 100
-            system_net_rate_excl = ((valid_sessions - read_failure) / valid_sessions) * 100
+            system_net_rate_excl = ((valid_sessions - effective_read_failure) / valid_sessions) * 100
             system_net_rate_incl_read_failure_ocr = (
-                (valid_sessions - read_failure + ocr_recovered_in_read_failure) / valid_sessions
+                (valid_sessions - effective_read_failure + ocr_recovered_in_read_failure) / valid_sessions
             ) * 100
             system_net_rate_incl_all_ocr = (
-                (valid_sessions - read_failure + total_ocr_recovered) / valid_sessions
+                (valid_sessions - effective_read_failure + total_ocr_recovered) / valid_sessions
             ) * 100
 
         system_read_failure_improvement = None
@@ -2359,6 +2361,8 @@ class ImageLabelTool:
             'no_code_count': no_code,
             'read_failure_count': read_failure,
             'unreadable_count': unreadable,
+            'effective_read_failure_count': effective_read_failure,
+            'sessions_false_noread': sessions_false_noread,
             'ocr_recovered_read_failure': ocr_recovered_in_read_failure,
             'ocr_recovered_unreadable': ocr_recovered_in_unreadable,
             'ocr_recovered_total': total_ocr_recovered,
@@ -2436,16 +2440,17 @@ class ImageLabelTool:
         write_line("Reading sessions (unique trigger ID detected): ", metrics['reading_sessions'], bold_value=True)
         write_line("False triggers: ", metrics['false_triggers'], bold_value=True)
         write_line("Valid sessions (effective parcel count): ", metrics['valid_sessions'])
-        write_line("Fail Reading sessions: ", metrics['fail_reading_sessions'], bold_value=True)
+        write_line("Fail Reading sessions (excl. False NoRead): ", metrics['fail_reading_sessions'], bold_value=True)
         write_line("Total read sessions (excluding OCR): ", metrics['total_read_sessions'])
 
         text_widget.insert(tk.END, "\n", 'normal')
 
         write_heading("READING ANALYSIS")
-        write_line("Fail Reading sessions: ", metrics['fail_reading_sessions'], bold_value=True)
+        write_line("Fail Reading sessions (excl. False NoRead): ", metrics['fail_reading_sessions'], bold_value=True)
         write_line("Sessions with no code (no-label/code): ", metrics['no_code_count'], bold_value=True)
         write_line("Sessions with read failure (with label but no-read): ", metrics['read_failure_count'], bold_value=True)
         write_line("Sessions with unreadable code: ", metrics['unreadable_count'], bold_value=True)
+        write_line("Sessions False NoRead: ", metrics['sessions_false_noread'])
         write_line("Total number of readable sessions w/o OCR: ", metrics['total_readable_without_ocr'])
 
         text_widget.insert(tk.END, "\n", 'normal')
@@ -2812,17 +2817,18 @@ class ImageLabelTool:
             report_lines.append(f"Reading sessions (unique trigger ID detected): {metrics['reading_sessions']}")
             report_lines.append(f"False triggers: {metrics['false_triggers']}")
             report_lines.append(f"Valid sessions (effective parcel count): {metrics['valid_sessions']}")
-            report_lines.append(f"Fail Reading sessions: {metrics['fail_reading_sessions']}")
+            report_lines.append(f"Fail Reading sessions (excl. False NoRead): {metrics['fail_reading_sessions']}")
             report_lines.append(f"Total read sessions (excluding OCR): {metrics['total_read_sessions']}")
 
             report_lines.append("")
 
             report_lines.append("READING ANALYSIS")
             report_lines.append("=" * len("READING ANALYSIS"))
-            report_lines.append(f"Fail Reading sessions: {metrics['fail_reading_sessions']}")
+            report_lines.append(f"Fail Reading sessions (excl. False NoRead): {metrics['fail_reading_sessions']}")
             report_lines.append(f"Sessions with no code (no-label/code): {metrics['no_code_count']}")
             report_lines.append(f"Sessions with read failure (with label but no-read): {metrics['read_failure_count']}")
             report_lines.append(f"Sessions with unreadable code: {metrics['unreadable_count']}")
+            report_lines.append(f"Sessions False NoRead: {metrics['sessions_false_noread']}")
             report_lines.append(f"Total number of readable sessions w/o OCR: {metrics['total_readable_without_ocr']}")
 
             report_lines.append("")
@@ -4322,9 +4328,11 @@ class ImageLabelTool:
         integrity_sum = sessions_no_code + sessions_read_failure + sessions_unreadable_code
         integrity_ok = (integrity_sum == total_sessions)
 
+        adjusted_failed_sessions = max(total_sessions - sessions_false_noread, 0)
+
         # Format the display
         lines = [
-            f"Number of failed sessions: {total_sessions}",
+            f"Number of failed sessions (excl. False NoRead): {adjusted_failed_sessions}",
             f"Sessions with no label: {sessions_no_code}",
             f"Sessions with read failure: {sessions_read_failure}",
             f"Sessions with unreadable code: {sessions_unreadable_code}",
@@ -4332,7 +4340,7 @@ class ImageLabelTool:
             f"Sessions False NoRead: {sessions_false_noread}",
             f"Total readable sessions (excl. OCR): {total_readable_excl_ocr}",
             f"Total readable sessions (incl. OCR): {total_readable_incl_ocr}",
-            f"Integrity check: {sessions_no_code} + {sessions_read_failure} + {sessions_unreadable_code} = {integrity_sum}" + (" (OK)" if integrity_ok else f" (❌ MISMATCH: should be {total_sessions})")
+            f"Integrity check (raw): {sessions_no_code} + {sessions_read_failure} + {sessions_unreadable_code} = {integrity_sum}" + (" (OK)" if integrity_ok else f" (❌ MISMATCH: should be {total_sessions})")
         ]
         self.session_count_var.set("\n".join(lines))
 
