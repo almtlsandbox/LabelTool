@@ -2267,6 +2267,111 @@ class ImageLabelTool:
             'timeout_ids': timeout_ids
         }
     
+    def _compute_log_tab_metrics(self, results, analysis_data, log_date_info):
+        """Compute derived metrics for the Log tab summary"""
+        session_labels_dict = self.calculate_session_labels()
+        session_ocr_status = self.calculate_session_ocr_readable_status()
+
+        start_display = log_date_info['start_date'] if log_date_info else "Not available"
+        end_display = log_date_info['end_date'] if log_date_info else "Not available"
+
+        start_raw = log_date_info.get('start_timestamp_raw') if log_date_info else None
+        end_raw = log_date_info.get('end_timestamp_raw') if log_date_info else None
+        start_dt = self.parse_log_timestamp(start_raw) or self.parse_log_timestamp(start_display)
+        end_dt = self.parse_log_timestamp(end_raw) or self.parse_log_timestamp(end_display)
+
+        duration_hours_value = None
+        if start_dt and end_dt:
+            duration_seconds = (end_dt - start_dt).total_seconds()
+            if duration_seconds >= 0:
+                duration_hours_value = duration_seconds / 3600
+
+        reading_sessions = results.get('unique_ids', 0)
+        false_triggers = results.get('false_triggers', 0)
+        valid_sessions = max(reading_sessions - false_triggers, 0)
+
+        no_code = analysis_data.get('no_code_count', 0)
+        read_failure = analysis_data.get('read_failure_count', 0)
+        unreadable = analysis_data.get('unreadable_count', 0)
+        fail_reading_sessions = max(no_code + read_failure + unreadable, 0)
+
+        total_read_sessions = max(valid_sessions - fail_reading_sessions, 0)
+        total_readable_without_ocr = max(total_read_sessions - no_code - unreadable, 0)
+
+        ocr_recovered_in_read_failure = sum(
+            1 for session_id, is_ocr in session_ocr_status.items()
+            if is_ocr and session_labels_dict.get(session_id) == "read failure"
+        )
+        ocr_recovered_in_unreadable = sum(
+            1 for session_id, is_ocr in session_ocr_status.items()
+            if is_ocr and session_labels_dict.get(session_id) == "unreadable"
+        )
+        total_ocr_recovered = ocr_recovered_in_read_failure + ocr_recovered_in_unreadable
+
+        decoder_net_rate = None
+        if total_readable_without_ocr > 0:
+            decoder_net_rate = (total_read_sessions / total_readable_without_ocr) * 100
+
+        system_gross_read_rate = None
+        system_net_rate_excl = None
+        system_net_rate_incl_read_failure_ocr = None
+        system_net_rate_incl_all_ocr = None
+        if valid_sessions > 0:
+            system_gross_read_rate = (total_read_sessions / valid_sessions) * 100
+            system_net_rate_excl = ((valid_sessions - read_failure) / valid_sessions) * 100
+            system_net_rate_incl_read_failure_ocr = (
+                (valid_sessions - read_failure + ocr_recovered_in_read_failure) / valid_sessions
+            ) * 100
+            system_net_rate_incl_all_ocr = (
+                (valid_sessions - read_failure + total_ocr_recovered) / valid_sessions
+            ) * 100
+
+        system_read_failure_improvement = None
+        if system_net_rate_excl is not None and system_net_rate_incl_read_failure_ocr is not None:
+            system_read_failure_improvement = (
+                system_net_rate_incl_read_failure_ocr - system_net_rate_excl
+            )
+
+        def pct_text(value):
+            return f"{value:.2f}%" if value is not None else "N/A"
+
+        duration_display = f"{duration_hours_value:.2f} h" if duration_hours_value is not None else "N/A"
+        improvement_text = (
+            f"{system_read_failure_improvement:+.2f}%" if system_read_failure_improvement is not None else "N/A"
+        )
+
+        return {
+            'start_display': start_display,
+            'end_display': end_display,
+            'duration_hours_value': duration_hours_value,
+            'duration_display': duration_display,
+            'reading_sessions': reading_sessions,
+            'false_triggers': false_triggers,
+            'valid_sessions': valid_sessions,
+            'fail_reading_sessions': fail_reading_sessions,
+            'total_read_sessions': total_read_sessions,
+            'total_readable_without_ocr': total_readable_without_ocr,
+            'no_code_count': no_code,
+            'read_failure_count': read_failure,
+            'unreadable_count': unreadable,
+            'ocr_recovered_read_failure': ocr_recovered_in_read_failure,
+            'ocr_recovered_unreadable': ocr_recovered_in_unreadable,
+            'ocr_recovered_total': total_ocr_recovered,
+            'decoder_net_rate': decoder_net_rate,
+            'decoder_net_rate_text': pct_text(decoder_net_rate),
+            'system_gross_read_rate': system_gross_read_rate,
+            'system_gross_read_rate_text': pct_text(system_gross_read_rate),
+            'system_net_rate_excl': system_net_rate_excl,
+            'system_net_rate_excl_text': pct_text(system_net_rate_excl),
+            'system_net_rate_incl_read_failure_ocr': system_net_rate_incl_read_failure_ocr,
+            'system_net_rate_incl_read_failure_ocr_text': pct_text(system_net_rate_incl_read_failure_ocr),
+            'system_net_rate_incl_all_ocr': system_net_rate_incl_all_ocr,
+            'system_net_rate_incl_all_ocr_text': pct_text(system_net_rate_incl_all_ocr),
+            'system_read_failure_improvement': system_read_failure_improvement,
+            'system_read_failure_improvement_text': improvement_text,
+            'log_file_path': getattr(self, 'log_file_path', None)
+        }
+
     def display_log_analysis_results(self, results):
         """Display the log analysis results in the structured format requested"""
         self.log_results_text.config(state=tk.NORMAL)
@@ -2296,128 +2401,70 @@ class ImageLabelTool:
         # Get updated analysis data after the total parcels change
         analysis_data = self.get_analysis_data()
         
-        # Format and display results in the requested structure
-        output = []
-        
-        # PATH section
-        output.append("=== PATH ===")
-        # Always show the full log file path
-        log_file_path = getattr(self, 'log_file_path', None)
-        if log_file_path:
-            output.append(f"Log File Path: {log_file_path}")
-        else:
-            output.append("Log File Path: Not set")
-        output.append("")  # Empty line
-        
-        # DATES section
-        output.append("=== DATES ===")
-        if log_date_info:
-            output.append(f"Start Date: {log_date_info['start_date']}")
-            output.append(f"End Date: {log_date_info['end_date']}")
-        else:
-            output.append("Start Date: Not available")
-            output.append("End Date: Not available")
-        
-        output.append("")  # Empty line
-        
-        # LOG FILE ANALYSIS section
-        output.append("=== LOG FILE ANALYSIS ===")
-        output.append(f"Number of sessions: {results['unique_ids']}")
-        
-        # Calculate read vs noread sessions
-        total_noread = results.get('total_noread', 0)
-        unique_ids = results['unique_ids']
-        effective_session_count = results.get('effective_session_count', 0)
-        # Use effective session count (excludes false triggers and timeouts) for consistency with Analysis tab
-        read_sessions = effective_session_count - total_noread
-        
-        output.append(f"Number of Read sessions: {read_sessions}")
-        output.append(f"Number of No-Read sessions: {total_noread}")
-        output.append(f"Number of False triggers: {results['false_triggers']}")
-        output.append(f"Number of Effective sessions: {results['effective_session_count']}")
-        
-        output.append("")  # Empty line
-        
-        # READING ANALYSIS section
-        output.append("=== READING ANALYSIS ===")
-        
-        # Number of Failed sessions is now equal to Number of No-Read sessions
+        metrics = self._compute_log_tab_metrics(results, analysis_data, log_date_info)
+        self.current_log_metrics = metrics
 
-        output.append(f"Number of Failed sessions: {total_noread}")
-        no_code = analysis_data['no_code_count']
-        read_failure = analysis_data['read_failure_count']
-        # Use consistent formula: total_sessions - sessions_no_code - sessions_read_failure
-        total_unreadable = len(self.calculate_session_labels()) - no_code - read_failure
-        if total_unreadable < 0:
-            total_unreadable = 0
-        output.append(f"Number of No-Code sessions: {no_code}")
-        output.append(f"Number of Read-Failure sessions: {read_failure}")
-        output.append(f"Number of Unreadable sessions: {total_unreadable}")
-        # Calculate OCR recovery breakdowns
-        session_labels_dict = self.calculate_session_labels()
-        session_ocr_readable_dict = self.calculate_session_ocr_readable_status()
-        ocr_recovered_in_read_failure = sum(
-            1 for session_id, is_ocr in session_ocr_readable_dict.items()
-            if is_ocr and session_labels_dict.get(session_id) == "read failure"
-        )
-        ocr_recovered_in_unreadable = sum(
-            1 for session_id, is_ocr in session_ocr_readable_dict.items()
-            if is_ocr and session_labels_dict.get(session_id) == "unreadable"
-        )
-        # Correct calculation: non read failure = read failure + unreadable
-        ocr_recovered_non_failure = ocr_recovered_in_read_failure + ocr_recovered_in_unreadable
-        output.append(f"Number of OCR recovered (non read failure) sessions: {ocr_recovered_non_failure}")
-        output.append(f"Sub-Number of OCR recovered in 'read failure' sessions: {ocr_recovered_in_read_failure}")
-        output.append(f"Sub-Number of OCR recovered in 'unreadable' sessions: {ocr_recovered_in_unreadable}")
-        
-        # Add False NoRead sessions count from Analysis tab
-        sessions_false_noread = self.calculate_sessions_with_false_noread()
-        output.append(f"Number of False NoRead sessions: {sessions_false_noread}")
-        
+        text_widget = self.log_results_text
+        text_widget.tag_configure('header', font=("Arial", 11, "bold"))
+        text_widget.tag_configure('bold', font=("Arial", 10, "bold"))
+        text_widget.tag_configure('normal', font=("Arial", 10))
 
-        # Integrity check: No-Code + Read-Failure + Unreadable == Failed sessions
-        integrity_sum = no_code + read_failure + total_unreadable
-        integrity_ok = (integrity_sum == total_noread)
-        output.append(f"Integrity check: {no_code} + {read_failure} + {total_unreadable} = {integrity_sum}" + (" (OK)" if integrity_ok else f" (❌ MISMATCH: should be {total_noread})"))
-        
-        output.append("")  # Empty line
-        
-        # READ RATE section
-        output.append("=== READ RATE ===")
-        
-        # Calculate rates
-        gross_rate = self.calculate_gross_rate(results, analysis_data)
-        net_reading_performance = self.calculate_net_reading_performance(results, analysis_data)
-        
-        output.append(f"Gross read performance: {gross_rate:.1f}%")
-        output.append(f"Net read performance (excl. OCR): {net_reading_performance['excl_ocr']:.2f}%")
-        output.append(f"Net read performance (incl. OCR): {net_reading_performance['incl_ocr']:.2f}%")
-        
-        # Add OCR improvement percentage using centralized calculation
-        if net_reading_performance['excl_ocr'] >= 0 and net_reading_performance['incl_ocr'] >= 0:
-            # Get analysis data to calculate actual read numbers
-            total_entered = analysis_data.get('total_entered', 0)
-            actual_sessions = analysis_data.get('actual_sessions', 0)
-            sessions_read_failure = analysis_data.get('read_failure_count', 0)
-            sessions_ocr_readable = self.calculate_sessions_with_ocr_readable()
-            sessions_ocr_readable_non_failure = self.calculate_ocr_readable_non_failure_sessions()
-            sessions_false_noread = self.calculate_sessions_with_false_noread()
-            
-            # Use centralized calculation for OCR improvement
-            net_rates = self.calculate_net_rates_centralized(
-                total_entered, actual_sessions, sessions_read_failure, 
-                sessions_false_noread, sessions_ocr_readable, sessions_ocr_readable_non_failure
-            )
-            
-            if net_rates['successful_reads_excl_ocr'] > 0:
-                output.append(f"OCR read rate improvement: +{net_rates['ocr_improvement_percentage']:.2f}%")
-            else:
-                output.append("OCR read rate improvement: N/A (no baseline reads)")
-        
-        # Join and display
-        result_text = "\n".join(output)
-        self.log_results_text.insert(tk.END, result_text)
-        self.log_results_text.config(state=tk.DISABLED)
+        def write_line(prefix, value=None, bold_value=False):
+            if prefix:
+                text_widget.insert(tk.END, prefix, 'normal')
+            if value is not None:
+                tag = 'bold' if bold_value else 'normal'
+                text_widget.insert(tk.END, str(value), tag)
+            text_widget.insert(tk.END, "\n", 'normal')
+
+        def write_heading(title):
+            text_widget.insert(tk.END, f"{title}\n", 'header')
+            text_widget.insert(tk.END, f"{'=' * len(title)}\n", 'normal')
+
+        write_line("Start: ", metrics['start_display'], bold_value=True)
+        write_line("End: ", metrics['end_display'], bold_value=True)
+        write_line("Duration hours: ", metrics['duration_display'], bold_value=True)
+
+        text_widget.insert(tk.END, "\n", 'normal')
+
+        write_heading("LOG FILE ANALYSIS")
+        write_line("Reading sessions (unique trigger ID detected): ", metrics['reading_sessions'], bold_value=True)
+        write_line("False triggers: ", metrics['false_triggers'], bold_value=True)
+        write_line("Valid sessions (effective parcel count): ", metrics['valid_sessions'])
+        write_line("Fail Reading sessions: ", metrics['fail_reading_sessions'], bold_value=True)
+        write_line("Total read sessions (excluding OCR): ", metrics['total_read_sessions'])
+
+        text_widget.insert(tk.END, "\n", 'normal')
+
+        write_heading("READING ANALYSIS")
+        write_line("Fail Reading sessions: ", metrics['fail_reading_sessions'], bold_value=True)
+        write_line("Sessions with no code (no-label/code): ", metrics['no_code_count'], bold_value=True)
+        write_line("Sessions with read failure (with label but no-read): ", metrics['read_failure_count'], bold_value=True)
+        write_line("Sessions with unreadable code: ", metrics['unreadable_count'], bold_value=True)
+        write_line("Total number of readable sessions w/o OCR: ", metrics['total_readable_without_ocr'])
+
+        text_widget.insert(tk.END, "\n", 'normal')
+
+        write_heading("OCR ANALYSIS")
+        write_line("Sessions with read failure recovered with OCR: ", metrics['ocr_recovered_read_failure'], bold_value=True)
+        write_line("Sessions with unreadable code recovered with OCR: ", metrics['ocr_recovered_unreadable'], bold_value=True)
+        write_line("Total session OCR recovered: ", metrics['ocr_recovered_total'])
+
+        text_widget.insert(tk.END, "\n", 'normal')
+
+        write_heading("READ RATE")
+        write_line("Decoder Net Read Rate (excluding OCR): ", metrics['decoder_net_rate_text'])
+        write_line("System Gross Read Rate: ", metrics['system_gross_read_rate_text'])
+        write_line("System Net Read Rate (excluding OCR): ", metrics['system_net_rate_excl_text'])
+        write_line("System Net Read Rate (including read failure recovered by OCR): ", metrics['system_net_rate_incl_read_failure_ocr_text'])
+        write_line("System Net Read Rate (including all recovered by OCR): ", metrics['system_net_rate_incl_all_ocr_text'])
+        write_line("System read failure improvement thanks to OCR: ", metrics['system_read_failure_improvement_text'])
+
+        if metrics.get('log_file_path'):
+            text_widget.insert(tk.END, "\n", 'normal')
+            write_line("Log file: ", metrics['log_file_path'])
+
+        text_widget.config(state=tk.DISABLED)
         
         # Enable export button
         self.enable_export_button()
@@ -2582,7 +2629,9 @@ class ImageLabelTool:
                 'start_date': start_date,
                 'end_date': end_date,
                 'start_id': start_entry['id'],
-                'end_id': end_entry['id']
+                'end_id': end_entry['id'],
+                'start_timestamp_raw': start_entry['timestamp'],
+                'end_timestamp_raw': end_entry['timestamp']
             }
             
         except Exception as e:
@@ -2614,6 +2663,28 @@ class ImageLabelTool:
             
         except Exception:
             return timestamp_str
+
+    def parse_log_timestamp(self, timestamp_str):
+        """Convert a log timestamp string into a datetime object when possible"""
+        if not timestamp_str:
+            return None
+
+        candidate_formats = [
+            '%Y-%m-%d %H:%M:%S',
+            '%m/%d/%Y %H:%M:%S',
+            '%d-%m-%Y %H:%M:%S',
+            '%Y%m%d_%H%M%S',
+            '%Y%m%d%H%M%S',
+            '%d/%m/%Y %H:%M:%S'
+        ]
+
+        for fmt in candidate_formats:
+            try:
+                return datetime.strptime(timestamp_str, fmt)
+            except ValueError:
+                continue
+
+        return None
     
     def get_analysis_data(self):
         """Get analysis data from current image classifications"""
@@ -2626,6 +2697,7 @@ class ImageLabelTool:
         # Count sessions by category
         no_code_count = sum(1 for label in session_labels_dict.values() if label == "no label")
         read_failure_count = sum(1 for label in session_labels_dict.values() if label == "read failure")
+        unreadable_count = sum(1 for label in session_labels_dict.values() if label == "unreadable")
         ocr_readable_count = self.calculate_sessions_with_ocr_readable()
         
         # Get actual sessions count (number of sessions found in images)
@@ -2633,14 +2705,17 @@ class ImageLabelTool:
         
         # Get total entered (expected total from user input)
         total_entered = int(self.total_sessions_var.get()) if self.total_sessions_var.get() else 0
+        failed_sessions_total = no_code_count + read_failure_count + unreadable_count
         
         return {
             'no_code_count': no_code_count,
             'read_failure_count': read_failure_count,
+            'unreadable_count': unreadable_count,
             'ocr_readable_count': ocr_readable_count,
             'total_sessions': len(session_labels_dict),
             'actual_sessions': actual_sessions,
-            'total_entered': total_entered
+            'total_entered': total_entered,
+            'failed_sessions_total': failed_sessions_total
         }
     
     def calculate_gross_rate(self, log_results, analysis_data):
@@ -2698,6 +2773,7 @@ class ImageLabelTool:
             results = self.current_log_analysis
             log_date_info = self.extract_log_date_range()
             analysis_data = self.get_analysis_data()
+            metrics = self._compute_log_tab_metrics(results, analysis_data, log_date_info)
             
             # Generate the report content
             report_lines = []
@@ -2705,123 +2781,59 @@ class ImageLabelTool:
             report_lines.append("=" * 60)
             report_lines.append(f"Generated: {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
             report_lines.append("")
-            
-            # PATH section
-            report_lines.append("=== PATH ===")
-            if hasattr(self, 'folder_path') and self.folder_path:
-                report_lines.append(f"Folder Path: {self.folder_path}")
-            else:
-                report_lines.append("Folder Path: No folder selected")
-            
+            report_lines.append(f"Start: {metrics['start_display']}")
+            report_lines.append(f"End: {metrics['end_display']}")
+            report_lines.append(f"Duration hours: {metrics['duration_display']}")
+            if metrics.get('log_file_path'):
+                report_lines.append(f"Log file: {metrics['log_file_path']}")
+
             report_lines.append("")
-            
-            # DATES section
-            report_lines.append("=== DATES ===")
-            if log_date_info:
-                report_lines.append(f"Start Date: {log_date_info['start_date']}")
-                report_lines.append(f"End Date: {log_date_info['end_date']}")
-            else:
-                report_lines.append("Start Date: Not available")
-                report_lines.append("End Date: Not available")
-            
-            report_lines.append("")
-            
-            # LOG FILE ANALYSIS section
+
             report_lines.append("LOG FILE ANALYSIS")
-            report_lines.append("-" * 20)
-            report_lines.append(f"Number of sessions: {results['unique_ids']}")
-            
-            # Calculate read vs noread sessions
-            total_noread = results.get('total_noread', 0)
-            unique_ids = results['unique_ids']
-            effective_session_count = results.get('effective_session_count', 0)
-            # Use effective session count (excludes false triggers and timeouts) for consistency with Analysis tab
-            read_sessions = effective_session_count - total_noread
-            
-            report_lines.append(f"Number of Read sessions: {read_sessions}")
-            report_lines.append(f"Number of No-Read sessions: {total_noread}")
-            report_lines.append(f"Number of False triggers: {results['false_triggers']}")
-            report_lines.append(f"Number of Effective sessions: {results['effective_session_count']}")
-            
+            report_lines.append("=" * len("LOG FILE ANALYSIS"))
+            report_lines.append(f"Reading sessions (unique trigger ID detected): {metrics['reading_sessions']}")
+            report_lines.append(f"False triggers: {metrics['false_triggers']}")
+            report_lines.append(f"Valid sessions (effective parcel count): {metrics['valid_sessions']}")
+            report_lines.append(f"Fail Reading sessions: {metrics['fail_reading_sessions']}")
+            report_lines.append(f"Total read sessions (excluding OCR): {metrics['total_read_sessions']}")
+
             report_lines.append("")
-            
-            # READING ANALYSIS section
+
             report_lines.append("READING ANALYSIS")
-            report_lines.append("-" * 16)
-            
-            # Calculate fail reading parcels (NOREAD minus missed triggers)
-            fail_reading_parcels = total_noread - results['false_triggers']
-            if fail_reading_parcels < 0:
-                fail_reading_parcels = 0
-                
-            report_lines.append(f"Number of Failed sessions: {fail_reading_parcels}")
-            report_lines.append(f"Number of No-Code sessions: {analysis_data['no_code_count']}")
-            report_lines.append(f"Number of Read-Failure sessions: {analysis_data['read_failure_count']}")
-            
-            # Calculate total unreadable using same formula as Analysis tab
-            # Use consistent formula: total_sessions - sessions_no_code - sessions_read_failure
-            total_unreadable = len(self.calculate_session_labels()) - analysis_data['no_code_count'] - analysis_data['read_failure_count']
-            if total_unreadable < 0:
-                total_unreadable = 0
-                
-            report_lines.append(f"Number of Unreadable sessions: {total_unreadable}")
-
-            # OCR recovery breakdowns
-            session_labels_dict = self.calculate_session_labels()
-            session_ocr_readable_dict = self.calculate_session_ocr_readable_status()
-            ocr_recovered_in_read_failure = sum(
-                1 for session_id, is_ocr in session_ocr_readable_dict.items()
-                if is_ocr and session_labels_dict.get(session_id) == "read failure"
-            )
-            ocr_recovered_in_unreadable = sum(
-                1 for session_id, is_ocr in session_ocr_readable_dict.items()
-                if is_ocr and session_labels_dict.get(session_id) == "unreadable"
-            )
-            # Correct calculation: non read failure = read failure + unreadable
-            ocr_recovered_non_failure = ocr_recovered_in_read_failure + ocr_recovered_in_unreadable
-            report_lines.append(f"Number of OCR recovered (non read failure) sessions: {ocr_recovered_non_failure}")
-            report_lines.append(f"Sub-Number of OCR recovered in 'read failure' sessions: {ocr_recovered_in_read_failure}")
-            report_lines.append(f"Sub-Number of OCR recovered in 'unreadable' sessions: {ocr_recovered_in_unreadable}")
-            
-            # Add False NoRead sessions count from Analysis tab
-            sessions_false_noread = self.calculate_sessions_with_false_noread()
-            report_lines.append(f"Number of False NoRead sessions: {sessions_false_noread}")
-            
+            report_lines.append("=" * len("READING ANALYSIS"))
+            report_lines.append(f"Fail Reading sessions: {metrics['fail_reading_sessions']}")
+            report_lines.append(f"Sessions with no code (no-label/code): {metrics['no_code_count']}")
+            report_lines.append(f"Sessions with read failure (with label but no-read): {metrics['read_failure_count']}")
+            report_lines.append(f"Sessions with unreadable code: {metrics['unreadable_count']}")
+            report_lines.append(f"Total number of readable sessions w/o OCR: {metrics['total_readable_without_ocr']}")
 
             report_lines.append("")
-            # READ RATE section
-            report_lines.append("=== READ RATE ===")
-            
-            # Calculate rates
-            gross_rate = self.calculate_gross_rate(results, analysis_data)
-            net_reading_performance = self.calculate_net_reading_performance(results, analysis_data)
-            
-            report_lines.append(f"Gross read performance: {gross_rate:.1f}%")
-            report_lines.append(f"Net read performance (excl. OCR): {net_reading_performance['excl_ocr']:.2f}%")
-            report_lines.append(f"Net read performance (incl. OCR): {net_reading_performance['incl_ocr']:.2f}%")
-            
-            # Add OCR improvement percentage
-            if net_reading_performance['excl_ocr'] >= 0 and net_reading_performance['incl_ocr'] >= 0:
-                # Get analysis data to calculate actual read numbers
-                total_entered = analysis_data.get('total_entered', 0)
-                actual_sessions = analysis_data.get('actual_sessions', 0)
-                sessions_read_failure = analysis_data.get('read_failure_count', 0)
-                sessions_ocr_readable = self.calculate_sessions_with_ocr_readable()
-                sessions_ocr_readable_non_failure = self.calculate_ocr_readable_non_failure_sessions()
-                
-                # Calculate readable sessions and read images
-                total_readable_excl_ocr = total_entered - actual_sessions + sessions_read_failure
-                total_readable_incl_ocr = total_readable_excl_ocr + sessions_ocr_readable_non_failure
-                
-                read_images_excl_ocr = total_readable_excl_ocr - sessions_read_failure
-                read_images_incl_ocr = read_images_excl_ocr + sessions_ocr_readable
-                
-                if read_images_excl_ocr > 0:
-                    # Formula: [(Read w/ OCR - Read w/o OCR) / Read w/o OCR] × 100
-                    ocr_improvement = ((read_images_incl_ocr - read_images_excl_ocr) / read_images_excl_ocr) * 100
-                    report_lines.append(f"OCR read rate improvement: +{ocr_improvement:.2f}%")
-                else:
-                    report_lines.append("OCR read rate improvement: N/A (no baseline reads)")
+
+            report_lines.append("OCR ANALYSIS")
+            report_lines.append("=" * len("OCR ANALYSIS"))
+            report_lines.append(f"Sessions with read failure recovered with OCR: {metrics['ocr_recovered_read_failure']}")
+            report_lines.append(f"Sessions with unreadable code recovered with OCR: {metrics['ocr_recovered_unreadable']}")
+            report_lines.append(f"Total session OCR recovered: {metrics['ocr_recovered_total']}")
+
+            report_lines.append("")
+
+            report_lines.append("READ RATE")
+            report_lines.append("=" * len("READ RATE"))
+            report_lines.append(f"Decoder Net Read Rate (excluding OCR): {metrics['decoder_net_rate_text']}")
+            report_lines.append(f"System Gross Read Rate: {metrics['system_gross_read_rate_text']}")
+            report_lines.append(f"System Net Read Rate (excluding OCR): {metrics['system_net_rate_excl_text']}")
+            report_lines.append(
+                "System Net Read Rate (including read failure recovered by OCR): "
+                f"{metrics['system_net_rate_incl_read_failure_ocr_text']}"
+            )
+            report_lines.append(
+                "System Net Read Rate (including all recovered by OCR): "
+                f"{metrics['system_net_rate_incl_all_ocr_text']}"
+            )
+            report_lines.append(
+                "System read failure improvement thanks to OCR: "
+                f"{metrics['system_read_failure_improvement_text']}"
+            )
             
             report_lines.append("")
             report_lines.append("=" * 50)
